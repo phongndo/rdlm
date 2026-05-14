@@ -11,6 +11,17 @@ env/
 # uv
 uv.lock
 
+# Model artifacts
+*.pt
+*.bin
+*.safetensors
+checkpoints/
+
+# Experiment tracking
+wandb/
+runs/
+logs/
+
 # Distribution / packaging
 dist/
 *.egg-info/
