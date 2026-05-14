@@ -15,13 +15,19 @@ from rdlm.arc import (
     build_structured_examples_from_task,
     collate_arc_examples,
     collate_structured_arc_examples,
+    compute_grid_object_features,
     parse_grid,
     serialize_grid,
     structured_example_difficulty,
 )
 from rdlm.arc_model import ArcOutputDiffusion
 from rdlm.diffusion_lm import RecursiveDiffusionLM
-from rdlm.train_arc import create_model
+from rdlm.train_arc import (
+    create_model,
+    evaluate_structured,
+    structured_forward_kwargs,
+    structured_prediction_metrics,
+)
 
 
 class ArcSerializationTests(unittest.TestCase):
@@ -70,6 +76,21 @@ class ArcSerializationTests(unittest.TestCase):
         self.assertEqual(batch["target_colors"][0, 0].item(), 2)
         self.assertTrue(batch["context_mask"].any())
         self.assertEqual(batch["target_shapes"], [(1, 1)])
+        self.assertIn("context_object_ids", batch)
+        self.assertEqual(batch["context_object_ids"].shape, batch["context_colors"].shape)
+
+    def test_grid_object_features_are_deterministic_components(self):
+        features = compute_grid_object_features([[1, 1, 0], [0, 1, 2]])
+
+        self.assertEqual(features.object_ids, [[1, 1, 0], [0, 1, 2]])
+        self.assertEqual(features.size_buckets, [[2, 2, 0], [0, 2, 1]])
+        self.assertEqual(features.heights, [[2, 2, 0], [0, 2, 1]])
+        self.assertEqual(features.widths, [[2, 2, 0], [0, 2, 1]])
+        self.assertEqual(features.rel_rows, [[1, 1, 0], [0, 2, 1]])
+        self.assertEqual(features.rel_cols, [[1, 2, 0], [0, 2, 1]])
+
+        separated = compute_grid_object_features([[1, 0, 1]])
+        self.assertEqual(separated.object_ids, [[1, 0, 2]])
 
     def test_color_permutation_is_consistent_across_task(self):
         task = {
@@ -186,6 +207,49 @@ class ArcTrainingSmokeTests(unittest.TestCase):
 
         self.assertTrue(torch.isfinite(out["loss"]))
 
+    def test_one_structured_encoder_step_with_object_features(self):
+        task = {
+            "train": [{"input": [[1, 1], [0, 2]], "output": [[2, 2], [0, 3]]}],
+            "test": [{"input": [[3, 3], [0, 4]], "output": [[4, 4], [0, 5]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[0]])
+        model = ArcOutputDiffusion(
+            dim=32,
+            max_grid_size=30,
+            max_examples=8,
+            num_heads=4,
+            use_object_features=True,
+        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+        out = model(**structured_forward_kwargs(batch))
+        out["loss"].backward()
+        optimizer.step()
+
+        self.assertTrue(torch.isfinite(out["loss"]))
+
+    def test_structured_prediction_metrics_capture_partial_errors(self):
+        generated = torch.tensor([[1, 2, 0, 0]])
+        expected = torch.tensor([[1, 3, 0, 4]])
+        target_mask = torch.ones((1, 4), dtype=torch.bool)
+        token_log_probs = torch.log(torch.tensor([[0.9, 0.8, 0.7, 0.6]]))
+
+        metrics = structured_prediction_metrics(
+            generated,
+            expected,
+            target_mask,
+            token_log_probs,
+        )
+
+        self.assertFalse(metrics["exact"])
+        self.assertEqual(metrics["cell_count"], 4)
+        self.assertEqual(metrics["correct_count"], 2)
+        self.assertEqual(metrics["cell_acc"], 0.5)
+        self.assertLess(metrics["nonzero_iou"], 1.0)
+        self.assertGreater(metrics["color_hist_l1"], 0.0)
+        self.assertAlmostEqual(metrics["mean_confidence"], 0.75, places=6)
+
     def test_structured_refinement_checkpointing_keeps_initial_state_gradients(self):
         task = {
             "train": [{"input": [[1]], "output": [[2]]}],
@@ -295,6 +359,41 @@ class ArcTrainingSmokeTests(unittest.TestCase):
 
         self.assertTrue(torch.equal(ensemble, greedy))
 
+    def test_structured_eval_writes_report_and_debug_json(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4]]}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "task.json"
+            report_path = Path(tmp) / "report.json"
+            debug_dir = Path(tmp) / "debug"
+            path.write_text(json.dumps(task), encoding="utf-8")
+            dataset = ArcStructuredDataset([path])
+            model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+
+            metrics = evaluate_structured(
+                model,
+                dataset,
+                "cpu",
+                limit=1,
+                sample_steps=2,
+                eval_report=report_path,
+                debug_dir=debug_dir,
+                debug_limit=1,
+            )
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            debug_files = list(debug_dir.glob("*.json"))
+            debug_payload = json.loads(debug_files[0].read_text(encoding="utf-8"))
+
+        self.assertIn("cell_acc", metrics)
+        self.assertIn("summary", report)
+        self.assertIn("examples", report)
+        self.assertEqual(len(debug_files), 1)
+        self.assertIn("trajectory", debug_payload)
+        self.assertIn("confidence_grid", debug_payload)
+
     def test_structured_ensemble_preserves_target_mask(self):
         model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
         zeros = torch.zeros((1, 1), dtype=torch.long)
@@ -328,12 +427,14 @@ class ArcTrainingSmokeTests(unittest.TestCase):
         model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
         zeros = torch.zeros((1, 1), dtype=torch.long)
         target_mask = torch.ones((1, 1), dtype=torch.bool)
-        candidates = iter([
-            (torch.tensor([[3]]), torch.tensor([[-0.4]])),
-            (torch.tensor([[4]]), torch.tensor([[-0.2]])),
-            (torch.tensor([[3]]), torch.tensor([[-0.6]])),
-            (torch.tensor([[4]]), torch.tensor([[-0.9]])),
-        ])
+        candidates = iter(
+            [
+                (torch.tensor([[3]]), torch.tensor([[-0.4]])),
+                (torch.tensor([[4]]), torch.tensor([[-0.2]])),
+                (torch.tensor([[3]]), torch.tensor([[-0.6]])),
+                (torch.tensor([[4]]), torch.tensor([[-0.9]])),
+            ]
+        )
 
         def fake_sample_with_scores(self, **kwargs):
             return next(candidates)
@@ -354,10 +455,12 @@ class ArcTrainingSmokeTests(unittest.TestCase):
         )
         self.assertEqual(generated.item(), 3)
 
-        candidates = iter([
-            (torch.tensor([[3]]), torch.tensor([[-0.5]])),
-            (torch.tensor([[4]]), torch.tensor([[-0.5]])),
-        ])
+        candidates = iter(
+            [
+                (torch.tensor([[3]]), torch.tensor([[-0.5]])),
+                (torch.tensor([[4]]), torch.tensor([[-0.5]])),
+            ]
+        )
         generated = model.sample_ensemble(
             context_colors=zeros,
             context_rows=zeros,

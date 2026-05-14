@@ -59,4 +59,28 @@ trainer exits with an explicit error instead of falling back to CPU/MPS.
 Structured encoder training also supports optional memory/regularization controls:
 `--gradient-checkpointing`, `--aux-loss-weight`, `--stochastic-depth-prob`,
 `--augment-color-permutation`, `--augment-translation`, `--augment-grid-noise`,
-and `--curriculum`.
+`--curriculum`, and `--use-object-features`.
+
+Use `--eval-report report.json` to write structured evaluation metrics and
+per-example rows as JSON. Use `--debug-dir debug/arc --debug-limit 5` to write
+per-example predicted grids, confidence grids, and greedy diffusion trajectories.
+
+Useful first ablations:
+
+```bash
+# Structured baseline
+uv run python src/rdlm/train_arc.py --arch structured_encoder --eval-only \
+  --eval-dir /path/to/arc/eval_tasks --resume checkpoints/arc/latest.pt \
+  --eval-report reports/baseline.json
+
+# Ensemble inference
+uv run python src/rdlm/train_arc.py --arch structured_encoder --eval-only \
+  --eval-dir /path/to/arc/eval_tasks --resume checkpoints/arc/latest.pt \
+  --inference-mode ensemble --num-candidates 8 \
+  --eval-report reports/ensemble.json
+
+# Object-feature model path
+uv run python src/rdlm/train_arc.py --arch structured_encoder --device cuda \
+  --data-dir /path/to/arc/tasks --eval-dir /path/to/arc/eval_tasks \
+  --use-object-features --checkpoint-dir checkpoints/arc_objects
+```

@@ -25,13 +25,22 @@ class ArcStructuredEncoder(nn.Module):
         max_grid_size: int = 30,
         max_examples: int = 8,
         num_roles: int = 4,
+        use_object_features: bool = False,
     ):
         super().__init__()
+        self.use_object_features = use_object_features
         self.color_embed = nn.Embedding(NUM_COLOR_TOKENS, dim)
         self.row_embed = nn.Embedding(max_grid_size, dim)
         self.col_embed = nn.Embedding(max_grid_size, dim)
         self.role_embed = nn.Embedding(num_roles, dim)
         self.example_embed = nn.Embedding(max_examples + 1, dim)
+        if use_object_features:
+            self.object_id_embed = nn.Embedding(max_grid_size * max_grid_size + 1, dim)
+            self.object_size_embed = nn.Embedding(max_grid_size * max_grid_size + 1, dim)
+            self.object_height_embed = nn.Embedding(max_grid_size + 1, dim)
+            self.object_width_embed = nn.Embedding(max_grid_size + 1, dim)
+            self.object_rel_row_embed = nn.Embedding(max_grid_size + 1, dim)
+            self.object_rel_col_embed = nn.Embedding(max_grid_size + 1, dim)
         self.norm = nn.LayerNorm(dim)
 
     def forward(
@@ -41,14 +50,42 @@ class ArcStructuredEncoder(nn.Module):
         cols: Tensor,
         roles: Tensor,
         examples: Tensor,
+        object_ids: Tensor | None = None,
+        object_size_buckets: Tensor | None = None,
+        object_heights: Tensor | None = None,
+        object_widths: Tensor | None = None,
+        object_rel_rows: Tensor | None = None,
+        object_rel_cols: Tensor | None = None,
     ) -> Tensor:
-        return self.norm(
+        encoded = (
             self.color_embed(colors + 1)
             + self.row_embed(rows)
             + self.col_embed(cols)
             + self.role_embed(roles)
             + self.example_embed(examples)
         )
+        if self.use_object_features:
+            if (
+                object_ids is None
+                or object_size_buckets is None
+                or object_heights is None
+                or object_widths is None
+                or object_rel_rows is None
+                or object_rel_cols is None
+            ):
+                raise ValueError(
+                    "object feature tensors are required when use_object_features=True"
+                )
+            encoded = (
+                encoded
+                + self.object_id_embed(object_ids)
+                + self.object_size_embed(object_size_buckets)
+                + self.object_height_embed(object_heights)
+                + self.object_width_embed(object_widths)
+                + self.object_rel_row_embed(object_rel_rows)
+                + self.object_rel_col_embed(object_rel_cols)
+            )
+        return self.norm(encoded)
 
 
 class ArcOutputDiffusion(nn.Module):
@@ -66,6 +103,7 @@ class ArcOutputDiffusion(nn.Module):
         gradient_checkpointing: bool = False,
         stochastic_depth_prob: float = 0.0,
         aux_loss_weight: float = 0.0,
+        use_object_features: bool = False,
     ):
         super().__init__()
         if not 0.0 <= stochastic_depth_prob < 1.0:
@@ -78,6 +116,7 @@ class ArcOutputDiffusion(nn.Module):
             dim=dim,
             max_grid_size=max_grid_size,
             max_examples=max_examples,
+            use_object_features=use_object_features,
         )
         self.target_color_embed = nn.Embedding(NUM_COLOR_TOKENS, dim)
         self.target_row_embed = nn.Embedding(max_grid_size, dim)
@@ -97,6 +136,7 @@ class ArcOutputDiffusion(nn.Module):
         self.gradient_checkpointing = gradient_checkpointing
         self.stochastic_depth_prob = stochastic_depth_prob
         self.aux_loss_weight = aux_loss_weight
+        self.use_object_features = use_object_features
 
     @property
     def device(self) -> torch.device:
@@ -144,6 +184,34 @@ class ArcOutputDiffusion(nn.Module):
             + self.target_col_embed(cols)
             + self.target_role_embed(role)
             + time_emb
+        )
+
+    def _encode_context(
+        self,
+        context_colors: Tensor,
+        context_rows: Tensor,
+        context_cols: Tensor,
+        context_roles: Tensor,
+        context_examples: Tensor,
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
+    ) -> Tensor:
+        return self.encoder(
+            context_colors,
+            context_rows,
+            context_cols,
+            context_roles,
+            context_examples,
+            object_ids=context_object_ids,
+            object_size_buckets=context_object_size_buckets,
+            object_heights=context_object_heights,
+            object_widths=context_object_widths,
+            object_rel_rows=context_object_rel_rows,
+            object_rel_cols=context_object_rel_cols,
         )
 
     def _refine_one_block(
@@ -218,17 +286,29 @@ class ArcOutputDiffusion(nn.Module):
         target_rows: Tensor,
         target_cols: Tensor,
         target_mask: Tensor,
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
     ) -> dict[str, Tensor]:
         batch = target_colors.shape[0]
         t = self.noise_schedule.sample_t(batch, device=str(target_colors.device))
         noisy_targets, is_masked = self._mask_targets(target_colors, target_mask, t)
 
-        context_inputs = self.encoder(
-            context_colors,
-            context_rows,
-            context_cols,
-            context_roles,
-            context_examples,
+        context_inputs = self._encode_context(
+            context_colors=context_colors,
+            context_rows=context_rows,
+            context_cols=context_cols,
+            context_roles=context_roles,
+            context_examples=context_examples,
+            context_object_ids=context_object_ids,
+            context_object_size_buckets=context_object_size_buckets,
+            context_object_heights=context_object_heights,
+            context_object_widths=context_object_widths,
+            context_object_rel_rows=context_object_rel_rows,
+            context_object_rel_cols=context_object_rel_cols,
         )
         target_inputs = self._target_inputs(noisy_targets, target_rows, target_cols, t)
         inputs = torch.cat([context_inputs, target_inputs], dim=1)
@@ -288,6 +368,12 @@ class ArcOutputDiffusion(nn.Module):
         steps: int = 64,
         temperature_start: float = 0.0,
         temperature_end: float = 0.0,
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         batch, target_len = target_rows.shape
         current = torch.full(
@@ -300,12 +386,18 @@ class ArcOutputDiffusion(nn.Module):
         revealed = torch.zeros((batch, target_len), dtype=torch.bool, device=self.device)
         transfer_schedule = self.noise_schedule.get_num_transfer_tokens(target_mask.bool(), steps)
 
-        context_inputs = self.encoder(
-            context_colors,
-            context_rows,
-            context_cols,
-            context_roles,
-            context_examples,
+        context_inputs = self._encode_context(
+            context_colors=context_colors,
+            context_rows=context_rows,
+            context_cols=context_cols,
+            context_roles=context_roles,
+            context_examples=context_examples,
+            context_object_ids=context_object_ids,
+            context_object_size_buckets=context_object_size_buckets,
+            context_object_heights=context_object_heights,
+            context_object_widths=context_object_widths,
+            context_object_rel_rows=context_object_rel_rows,
+            context_object_rel_cols=context_object_rel_cols,
         )
         for step_idx in range(transfer_schedule.shape[1]):
             if transfer_schedule.shape[1] <= 1:
@@ -352,6 +444,109 @@ class ArcOutputDiffusion(nn.Module):
         )
 
     @torch.no_grad()
+    def sample_with_trace(
+        self,
+        context_colors: Tensor,
+        context_rows: Tensor,
+        context_cols: Tensor,
+        context_roles: Tensor,
+        context_examples: Tensor,
+        context_mask: Tensor,
+        target_rows: Tensor,
+        target_cols: Tensor,
+        target_mask: Tensor,
+        steps: int = 64,
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
+    ) -> dict[str, Tensor]:
+        batch, target_len = target_rows.shape
+        current = torch.full(
+            (batch, target_len),
+            MASK_COLOR_ID - 1,
+            dtype=torch.long,
+            device=self.device,
+        )
+        token_log_probs = torch.zeros((batch, target_len), dtype=torch.float, device=self.device)
+        revealed = torch.zeros((batch, target_len), dtype=torch.bool, device=self.device)
+        target_mask_bool = target_mask.bool()
+        transfer_schedule = self.noise_schedule.get_num_transfer_tokens(target_mask_bool, steps)
+        context_inputs = self._encode_context(
+            context_colors=context_colors,
+            context_rows=context_rows,
+            context_cols=context_cols,
+            context_roles=context_roles,
+            context_examples=context_examples,
+            context_object_ids=context_object_ids,
+            context_object_size_buckets=context_object_size_buckets,
+            context_object_heights=context_object_heights,
+            context_object_widths=context_object_widths,
+            context_object_rel_rows=context_object_rel_rows,
+            context_object_rel_cols=context_object_rel_cols,
+        )
+
+        revealed_history: list[Tensor] = []
+        sample_history: list[Tensor] = []
+        confidence_history: list[Tensor] = []
+        for step_idx in range(transfer_schedule.shape[1]):
+            remaining = (target_mask_bool & ~revealed).float().sum(dim=-1)
+            total = target_mask.float().sum(dim=-1).clamp(min=1)
+            t = (remaining / total).clamp(min=0.01, max=0.99)
+            target_inputs = self._target_inputs(current, target_rows, target_cols, t)
+            inputs = torch.cat([context_inputs, target_inputs], dim=1)
+            attention_mask = torch.cat([context_mask, target_mask], dim=1)
+            outputs = self._refine(inputs, attention_mask)
+            logits = self.to_logits(outputs[:, context_inputs.shape[1] :])
+            clean_log_probs = functional.log_softmax(logits, dim=-1)
+            preds = logits.argmax(dim=-1)
+            clean_pred_log_probs = torch.gather(
+                clean_log_probs,
+                -1,
+                preds.unsqueeze(-1),
+            ).squeeze(-1)
+            confidence = clean_pred_log_probs.exp()
+            selection_confidence = confidence.masked_fill(
+                ~target_mask_bool | revealed,
+                -float("inf"),
+            )
+            transfer = torch.zeros_like(revealed)
+            for row in range(batch):
+                k = int(transfer_schedule[row, step_idx].item())
+                if k > 0:
+                    _vals, idxs = torch.topk(selection_confidence[row], k=min(k, target_len))
+                    transfer[row, idxs] = True
+            current = torch.where(transfer, preds, current)
+            token_log_probs = torch.where(transfer, clean_pred_log_probs, token_log_probs)
+            revealed = revealed | transfer
+            sample_history.append(torch.where(target_mask_bool, current, torch.zeros_like(current)))
+            revealed_history.append(revealed.clone())
+            confidence_history.append(
+                torch.where(target_mask_bool, confidence, torch.zeros_like(confidence))
+            )
+
+        history_shape = (batch, 0, target_len)
+        return {
+            "samples": torch.where(target_mask_bool, current, torch.zeros_like(current)),
+            "token_log_probs": torch.where(
+                target_mask_bool,
+                token_log_probs,
+                torch.zeros_like(token_log_probs),
+            ),
+            "revealed_history": torch.stack(revealed_history, dim=1)
+            if revealed_history
+            else torch.zeros(history_shape, dtype=torch.bool, device=self.device),
+            "sample_history": torch.stack(sample_history, dim=1)
+            if sample_history
+            else torch.zeros(history_shape, dtype=torch.long, device=self.device),
+            "confidence_history": torch.stack(confidence_history, dim=1)
+            if confidence_history
+            else torch.zeros(history_shape, dtype=torch.float, device=self.device),
+        }
+
+    @torch.no_grad()
     def sample(
         self,
         context_colors: Tensor,
@@ -364,6 +559,12 @@ class ArcOutputDiffusion(nn.Module):
         target_cols: Tensor,
         target_mask: Tensor,
         steps: int = 64,
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
     ) -> Tensor:
         samples, _scores = self._sample_with_scores(
             context_colors=context_colors,
@@ -376,11 +577,17 @@ class ArcOutputDiffusion(nn.Module):
             target_cols=target_cols,
             target_mask=target_mask,
             steps=steps,
+            context_object_ids=context_object_ids,
+            context_object_size_buckets=context_object_size_buckets,
+            context_object_heights=context_object_heights,
+            context_object_widths=context_object_widths,
+            context_object_rel_rows=context_object_rel_rows,
+            context_object_rel_cols=context_object_rel_cols,
         )
         return samples
 
     @torch.no_grad()
-    def sample_ensemble(
+    def _sample_ensemble_with_scores(
         self,
         context_colors: Tensor,
         context_rows: Tensor,
@@ -396,7 +603,13 @@ class ArcOutputDiffusion(nn.Module):
         temperature_start: float = 1.0,
         temperature_end: float = 0.1,
         strategy: str = "confidence",
-    ) -> Tensor:
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
         if num_candidates < 1:
             raise ValueError("num_candidates must be at least 1")
         if temperature_start < 0 or temperature_end < 0:
@@ -420,6 +633,12 @@ class ArcOutputDiffusion(nn.Module):
                 steps=steps,
                 temperature_start=temperature_start,
                 temperature_end=temperature_end,
+                context_object_ids=context_object_ids,
+                context_object_size_buckets=context_object_size_buckets,
+                context_object_heights=context_object_heights,
+                context_object_widths=context_object_widths,
+                context_object_rel_rows=context_object_rel_rows,
+                context_object_rel_cols=context_object_rel_cols,
             )
             samples.append(sample)
             log_probs.append(scores)
@@ -434,7 +653,11 @@ class ArcOutputDiffusion(nn.Module):
             best_idx = candidate_scores.argmax(dim=0)
             batch_idx = torch.arange(target_rows.shape[0], device=self.device)
             best = sample_stack[best_idx, batch_idx]
-            return torch.where(target_mask_bool, best, torch.zeros_like(best))
+            best_scores = log_prob_stack[best_idx, batch_idx]
+            return (
+                torch.where(target_mask_bool, best, torch.zeros_like(best)),
+                torch.where(target_mask_bool, best_scores, torch.zeros_like(best_scores)),
+            )
 
         vote_counts = []
         vote_scores = []
@@ -447,4 +670,58 @@ class ArcOutputDiffusion(nn.Module):
         max_counts = counts.max(dim=-1, keepdim=True).values
         tied_scores = scores.masked_fill(counts != max_counts, -float("inf"))
         voted = tied_scores.argmax(dim=-1)
-        return torch.where(target_mask_bool, voted, torch.zeros_like(voted))
+        voted_scores = torch.gather(scores, -1, voted.unsqueeze(-1)).squeeze(-1)
+        voted_counts = torch.gather(counts, -1, voted.unsqueeze(-1)).squeeze(-1).clamp(min=1)
+        voted_scores = voted_scores / voted_counts
+        return (
+            torch.where(target_mask_bool, voted, torch.zeros_like(voted)),
+            torch.where(target_mask_bool, voted_scores, torch.zeros_like(voted_scores)),
+        )
+
+    @torch.no_grad()
+    def sample_ensemble(
+        self,
+        context_colors: Tensor,
+        context_rows: Tensor,
+        context_cols: Tensor,
+        context_roles: Tensor,
+        context_examples: Tensor,
+        context_mask: Tensor,
+        target_rows: Tensor,
+        target_cols: Tensor,
+        target_mask: Tensor,
+        steps: int = 64,
+        num_candidates: int = 8,
+        temperature_start: float = 1.0,
+        temperature_end: float = 0.1,
+        strategy: str = "confidence",
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
+    ) -> Tensor:
+        samples, _scores = self._sample_ensemble_with_scores(
+            context_colors=context_colors,
+            context_rows=context_rows,
+            context_cols=context_cols,
+            context_roles=context_roles,
+            context_examples=context_examples,
+            context_mask=context_mask,
+            target_rows=target_rows,
+            target_cols=target_cols,
+            target_mask=target_mask,
+            steps=steps,
+            num_candidates=num_candidates,
+            temperature_start=temperature_start,
+            temperature_end=temperature_end,
+            strategy=strategy,
+            context_object_ids=context_object_ids,
+            context_object_size_buckets=context_object_size_buckets,
+            context_object_heights=context_object_heights,
+            context_object_widths=context_object_widths,
+            context_object_rel_rows=context_object_rel_rows,
+            context_object_rel_cols=context_object_rel_cols,
+        )
+        return samples

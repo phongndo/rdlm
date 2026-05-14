@@ -43,6 +43,18 @@ class ArcExample:
 
 
 @dataclass(frozen=True)
+class GridObjectFeatures:
+    """Per-cell object metadata for one ARC grid."""
+
+    object_ids: Grid
+    size_buckets: Grid
+    heights: Grid
+    widths: Grid
+    rel_rows: Grid
+    rel_cols: Grid
+
+
+@dataclass(frozen=True)
 class ArcStructuredExample:
     """Grid-native ARC example for encoder-conditioned output diffusion."""
 
@@ -52,6 +64,12 @@ class ArcStructuredExample:
     context_cols: tuple[int, ...]
     context_roles: tuple[int, ...]
     context_examples: tuple[int, ...]
+    context_object_ids: tuple[int, ...]
+    context_object_size_buckets: tuple[int, ...]
+    context_object_heights: tuple[int, ...]
+    context_object_widths: tuple[int, ...]
+    context_object_rel_rows: tuple[int, ...]
+    context_object_rel_cols: tuple[int, ...]
     target_colors: tuple[int, ...]
     target_rows: tuple[int, ...]
     target_cols: tuple[int, ...]
@@ -187,6 +205,77 @@ def build_examples_from_task(task_id: str, task: dict[str, Any], seq_len: int) -
     return examples
 
 
+def _zero_feature_grid(grid: Grid) -> Grid:
+    return [[0 for _cell in row] for row in grid]
+
+
+def compute_grid_object_features(grid: Grid) -> GridObjectFeatures:
+    """Compute deterministic 4-connected same-color object features.
+
+    Non-zero cells are grouped into objects. Background cells keep zero-valued
+    object features so they can share one embedding bucket.
+    """
+    serialize_grid(grid)
+    height = len(grid)
+    width = len(grid[0])
+    visited = [[False for _cell in row] for row in grid]
+    object_ids = _zero_feature_grid(grid)
+    size_buckets = _zero_feature_grid(grid)
+    heights = _zero_feature_grid(grid)
+    widths = _zero_feature_grid(grid)
+    rel_rows = _zero_feature_grid(grid)
+    rel_cols = _zero_feature_grid(grid)
+    next_object_id = 1
+
+    for start_row, row in enumerate(grid):
+        for start_col, color in enumerate(row):
+            if color == 0 or visited[start_row][start_col]:
+                continue
+
+            queue = [(start_row, start_col)]
+            visited[start_row][start_col] = True
+            cells: list[tuple[int, int]] = []
+            for row_idx, col_idx in queue:
+                cells.append((row_idx, col_idx))
+                for next_row, next_col in (
+                    (row_idx - 1, col_idx),
+                    (row_idx + 1, col_idx),
+                    (row_idx, col_idx - 1),
+                    (row_idx, col_idx + 1),
+                ):
+                    if not (0 <= next_row < height and 0 <= next_col < width):
+                        continue
+                    if visited[next_row][next_col] or grid[next_row][next_col] != color:
+                        continue
+                    visited[next_row][next_col] = True
+                    queue.append((next_row, next_col))
+
+            rows = [row_idx for row_idx, _col_idx in cells]
+            cols = [col_idx for _row_idx, col_idx in cells]
+            min_row = min(rows)
+            min_col = min(cols)
+            object_height = max(rows) - min_row + 1
+            object_width = max(cols) - min_col + 1
+            size_bucket = len(cells).bit_length()
+            for row_idx, col_idx in cells:
+                object_ids[row_idx][col_idx] = next_object_id
+                size_buckets[row_idx][col_idx] = size_bucket
+                heights[row_idx][col_idx] = object_height
+                widths[row_idx][col_idx] = object_width
+                rel_rows[row_idx][col_idx] = row_idx - min_row + 1
+                rel_cols[row_idx][col_idx] = col_idx - min_col + 1
+            next_object_id += 1
+
+    return GridObjectFeatures(
+        object_ids=object_ids,
+        size_buckets=size_buckets,
+        heights=heights,
+        widths=widths,
+        rel_rows=rel_rows,
+        rel_cols=rel_cols,
+    )
+
+
 def _append_grid_cells(
     grid: Grid,
     role: int,
@@ -196,8 +285,15 @@ def _append_grid_cells(
     cols: list[int],
     roles: list[int],
     examples: list[int],
+    object_ids: list[int],
+    object_size_buckets: list[int],
+    object_heights: list[int],
+    object_widths: list[int],
+    object_rel_rows: list[int],
+    object_rel_cols: list[int],
 ) -> None:
     serialize_grid(grid)
+    object_features = compute_grid_object_features(grid)
     for row_idx, row in enumerate(grid):
         for col_idx, color in enumerate(row):
             colors.append(color)
@@ -205,6 +301,12 @@ def _append_grid_cells(
             cols.append(col_idx)
             roles.append(role)
             examples.append(example_idx)
+            object_ids.append(object_features.object_ids[row_idx][col_idx])
+            object_size_buckets.append(object_features.size_buckets[row_idx][col_idx])
+            object_heights.append(object_features.heights[row_idx][col_idx])
+            object_widths.append(object_features.widths[row_idx][col_idx])
+            object_rel_rows.append(object_features.rel_rows[row_idx][col_idx])
+            object_rel_cols.append(object_features.rel_cols[row_idx][col_idx])
 
 
 def _grid_fits(grid: Grid, max_grid_size: int) -> bool:
@@ -377,6 +479,12 @@ def build_structured_examples_from_task(
         cols: list[int] = []
         roles: list[int] = []
         examples: list[int] = []
+        object_ids: list[int] = []
+        object_size_buckets: list[int] = []
+        object_heights: list[int] = []
+        object_widths: list[int] = []
+        object_rel_rows: list[int] = []
+        object_rel_cols: list[int] = []
         for demo_idx, demo in enumerate(demos):
             _append_grid_cells(
                 demo["input"],
@@ -387,6 +495,12 @@ def build_structured_examples_from_task(
                 cols,
                 roles,
                 examples,
+                object_ids,
+                object_size_buckets,
+                object_heights,
+                object_widths,
+                object_rel_rows,
+                object_rel_cols,
             )
             _append_grid_cells(
                 demo["output"],
@@ -397,6 +511,12 @@ def build_structured_examples_from_task(
                 cols,
                 roles,
                 examples,
+                object_ids,
+                object_size_buckets,
+                object_heights,
+                object_widths,
+                object_rel_rows,
+                object_rel_cols,
             )
         _append_grid_cells(
             query_input,
@@ -407,6 +527,12 @@ def build_structured_examples_from_task(
             cols,
             roles,
             examples,
+            object_ids,
+            object_size_buckets,
+            object_heights,
+            object_widths,
+            object_rel_rows,
+            object_rel_cols,
         )
 
         target_colors: list[int] = []
@@ -426,6 +552,12 @@ def build_structured_examples_from_task(
                 context_cols=tuple(cols),
                 context_roles=tuple(roles),
                 context_examples=tuple(examples),
+                context_object_ids=tuple(object_ids),
+                context_object_size_buckets=tuple(object_size_buckets),
+                context_object_heights=tuple(object_heights),
+                context_object_widths=tuple(object_widths),
+                context_object_rel_rows=tuple(object_rel_rows),
+                context_object_rel_cols=tuple(object_rel_cols),
                 target_colors=tuple(target_colors),
                 target_rows=tuple(target_rows),
                 target_cols=tuple(target_cols),
@@ -546,6 +678,12 @@ def collate_structured_arc_examples(
     context_cols = torch.zeros((batch_size, max_context), dtype=torch.long)
     context_roles = torch.zeros((batch_size, max_context), dtype=torch.long)
     context_examples = torch.zeros((batch_size, max_context), dtype=torch.long)
+    context_object_ids = torch.zeros((batch_size, max_context), dtype=torch.long)
+    context_object_size_buckets = torch.zeros((batch_size, max_context), dtype=torch.long)
+    context_object_heights = torch.zeros((batch_size, max_context), dtype=torch.long)
+    context_object_widths = torch.zeros((batch_size, max_context), dtype=torch.long)
+    context_object_rel_rows = torch.zeros((batch_size, max_context), dtype=torch.long)
+    context_object_rel_cols = torch.zeros((batch_size, max_context), dtype=torch.long)
     context_mask = torch.zeros((batch_size, max_context), dtype=torch.bool)
     target_colors = torch.zeros((batch_size, max_target), dtype=torch.long)
     target_rows = torch.zeros((batch_size, max_target), dtype=torch.long)
@@ -565,6 +703,30 @@ def collate_structured_arc_examples(
             example.context_examples,
             dtype=torch.long,
         )
+        context_object_ids[row, :context_len] = torch.tensor(
+            example.context_object_ids,
+            dtype=torch.long,
+        )
+        context_object_size_buckets[row, :context_len] = torch.tensor(
+            example.context_object_size_buckets,
+            dtype=torch.long,
+        )
+        context_object_heights[row, :context_len] = torch.tensor(
+            example.context_object_heights,
+            dtype=torch.long,
+        )
+        context_object_widths[row, :context_len] = torch.tensor(
+            example.context_object_widths,
+            dtype=torch.long,
+        )
+        context_object_rel_rows[row, :context_len] = torch.tensor(
+            example.context_object_rel_rows,
+            dtype=torch.long,
+        )
+        context_object_rel_cols[row, :context_len] = torch.tensor(
+            example.context_object_rel_cols,
+            dtype=torch.long,
+        )
         context_mask[row, :context_len] = True
         target_colors[row, :target_len] = torch.tensor(example.target_colors, dtype=torch.long)
         target_rows[row, :target_len] = torch.tensor(example.target_rows, dtype=torch.long)
@@ -579,6 +741,12 @@ def collate_structured_arc_examples(
         "context_cols": context_cols,
         "context_roles": context_roles,
         "context_examples": context_examples,
+        "context_object_ids": context_object_ids,
+        "context_object_size_buckets": context_object_size_buckets,
+        "context_object_heights": context_object_heights,
+        "context_object_widths": context_object_widths,
+        "context_object_rel_rows": context_object_rel_rows,
+        "context_object_rel_cols": context_object_rel_cols,
         "context_mask": context_mask,
         "target_colors": target_colors,
         "target_rows": target_rows,

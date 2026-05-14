@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import torch
 from torch.utils.data import DataLoader
@@ -22,11 +23,43 @@ from rdlm.arc import (
     find_arc_json_files,
     parse_grid,
 )
-from rdlm.arc_model import ArcOutputDiffusion
+from rdlm.arc_model import NUM_OUTPUT_COLORS, ArcOutputDiffusion
 from rdlm.diffusion_lm import NoiseSchedule, RecursiveDiffusionLM
 from rdlm.trm import TinyRecursiveModel
 
 ArchitectureModel = RecursiveDiffusionLM | ArcOutputDiffusion
+
+
+class PredictionMetrics(TypedDict):
+    exact: bool
+    cell_count: int
+    correct_count: int
+    cell_acc: float
+    nonzero_iou: float
+    color_hist_l1: float
+    mean_token_log_prob: float
+    mean_confidence: float
+
+
+STRUCTURED_FORWARD_KEYS = (
+    "context_colors",
+    "context_rows",
+    "context_cols",
+    "context_roles",
+    "context_examples",
+    "context_mask",
+    "target_colors",
+    "target_rows",
+    "target_cols",
+    "target_mask",
+    "context_object_ids",
+    "context_object_size_buckets",
+    "context_object_heights",
+    "context_object_widths",
+    "context_object_rel_rows",
+    "context_object_rel_cols",
+)
+STRUCTURED_SAMPLE_KEYS = tuple(key for key in STRUCTURED_FORWARD_KEYS if key != "target_colors")
 
 
 def choose_device(name: str) -> str:
@@ -70,6 +103,7 @@ def create_structured_model(args: argparse.Namespace) -> ArcOutputDiffusion:
         gradient_checkpointing=args.gradient_checkpointing,
         stochastic_depth_prob=args.stochastic_depth_prob,
         aux_loss_weight=args.aux_loss_weight,
+        use_object_features=args.use_object_features,
     )
 
 
@@ -111,6 +145,136 @@ def load_checkpoint(
 def load_model_checkpoint(path: Path, model: ArchitectureModel, device: str) -> None:
     checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint["model"])
+
+
+def structured_forward_kwargs(batch: dict[str, Any]) -> dict[str, torch.Tensor]:
+    kwargs: dict[str, torch.Tensor] = {}
+    for key in STRUCTURED_FORWARD_KEYS:
+        value = batch.get(key)
+        if isinstance(value, torch.Tensor):
+            kwargs[key] = value
+    return kwargs
+
+
+def structured_sample_kwargs(batch: dict[str, Any]) -> dict[str, torch.Tensor]:
+    kwargs: dict[str, torch.Tensor] = {}
+    for key in STRUCTURED_SAMPLE_KEYS:
+        value = batch.get(key)
+        if isinstance(value, torch.Tensor):
+            kwargs[key] = value
+    return kwargs
+
+
+def _jsonable_args(args: argparse.Namespace | None) -> dict[str, Any]:
+    if args is None:
+        return {}
+    jsonable: dict[str, Any] = {}
+    for key, value in vars(args).items():
+        jsonable[key] = str(value) if isinstance(value, Path) else value
+    return jsonable
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _grid_from_values(
+    values: list[int],
+    shape: tuple[int, int],
+    unknown_value: int | None = None,
+) -> list[list[int]]:
+    height, width = shape
+    grid: list[list[int]] = []
+    for row_idx in range(height):
+        row: list[int] = []
+        for col_idx in range(width):
+            value = int(values[row_idx * width + col_idx])
+            if unknown_value is not None and value >= NUM_OUTPUT_COLORS:
+                value = unknown_value
+            row.append(value)
+        grid.append(row)
+    return grid
+
+
+def _float_grid_from_tensor(values: torch.Tensor, shape: tuple[int, int]) -> list[list[float]]:
+    flat = [float(value) for value in values.detach().cpu().tolist()]
+    height, width = shape
+    return [flat[row_idx * width : (row_idx + 1) * width] for row_idx in range(height)]
+
+
+def structured_prediction_metrics(
+    generated: torch.Tensor,
+    expected: torch.Tensor,
+    target_mask: torch.Tensor,
+    token_log_probs: torch.Tensor,
+) -> PredictionMetrics:
+    mask = target_mask.bool()
+    predicted_values = generated[mask].long().cpu()
+    expected_values = expected[mask].long().cpu()
+    log_probs = token_log_probs[mask].float().cpu()
+    cell_count = int(expected_values.numel())
+    correct_count = int((predicted_values == expected_values).sum().item())
+    predicted_nonzero = predicted_values != 0
+    expected_nonzero = expected_values != 0
+    nonzero_union = int((predicted_nonzero | expected_nonzero).sum().item())
+    nonzero_intersection = int((predicted_nonzero & expected_nonzero).sum().item())
+    predicted_hist = torch.bincount(predicted_values, minlength=NUM_OUTPUT_COLORS).float()
+    expected_hist = torch.bincount(expected_values, minlength=NUM_OUTPUT_COLORS).float()
+    cell_denom = max(cell_count, 1)
+    return {
+        "exact": bool(correct_count == cell_count),
+        "cell_count": cell_count,
+        "correct_count": correct_count,
+        "cell_acc": correct_count / cell_denom,
+        "nonzero_iou": 1.0 if nonzero_union == 0 else nonzero_intersection / nonzero_union,
+        "color_hist_l1": float((predicted_hist - expected_hist).abs().sum().item() / cell_denom),
+        "mean_token_log_prob": float(log_probs.mean().item()) if cell_count else 0.0,
+        "mean_confidence": float(log_probs.exp().mean().item()) if cell_count else 0.0,
+    }
+
+
+def _structured_debug_payload(
+    task_id: str,
+    shape: tuple[int, int],
+    expected: torch.Tensor,
+    generated: torch.Tensor,
+    token_log_probs: torch.Tensor,
+    trace: dict[str, torch.Tensor] | None,
+    metrics: PredictionMetrics,
+) -> dict[str, Any]:
+    expected_values = [int(value) for value in expected.detach().cpu().view(-1).tolist()]
+    generated_values = [int(value) for value in generated.detach().cpu().view(-1).tolist()]
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "target_shape": list(shape),
+        "metrics": metrics,
+        "expected_grid": _grid_from_values(expected_values, shape),
+        "predicted_grid": _grid_from_values(generated_values, shape),
+        "token_log_prob_grid": _float_grid_from_tensor(token_log_probs.view(-1), shape),
+        "confidence_grid": _float_grid_from_tensor(token_log_probs.exp().view(-1), shape),
+        "trajectory": [],
+        "revealed_trajectory": [],
+        "confidence_trajectory": [],
+    }
+    if trace is None:
+        return payload
+
+    sample_history = trace["sample_history"][0].detach().cpu()
+    revealed_history = trace["revealed_history"][0].detach().cpu()
+    confidence_history = trace["confidence_history"][0].detach().cpu()
+    payload["trajectory"] = [
+        _grid_from_values([int(value) for value in step.tolist()], shape, unknown_value=-1)
+        for step in sample_history
+    ]
+    payload["revealed_trajectory"] = [
+        _grid_from_values([int(value) for value in step.tolist()], shape)
+        for step in revealed_history.long()
+    ]
+    payload["confidence_trajectory"] = [
+        _float_grid_from_tensor(step.view(-1), shape) for step in confidence_history
+    ]
+    return payload
 
 
 @torch.no_grad()
@@ -166,33 +330,38 @@ def evaluate_structured(
     temperature_start: float = 1.0,
     temperature_end: float = 0.1,
     ensemble_strategy: str = "confidence",
+    eval_report: Path | None = None,
+    debug_dir: Path | None = None,
+    debug_limit: int = 5,
+    args: argparse.Namespace | None = None,
+    checkpoint_path: Path | None = None,
 ) -> dict[str, float]:
     model.eval()
     total = min(limit, len(dataset))
     exact = 0
+    total_cells = 0
+    correct_cells = 0
+    nonzero_iou_sum = 0.0
+    color_hist_l1_sum = 0.0
+    token_log_prob_sum = 0.0
+    confidence_sum = 0.0
+    examples: list[dict[str, Any]] = []
 
     for idx in range(total):
         batch = collate_structured_arc_examples([dataset[idx]])
         moved = {
             key: value.to(device) for key, value in batch.items() if isinstance(value, torch.Tensor)
         }
-        sample_kwargs = {
-            "context_colors": moved["context_colors"],
-            "context_rows": moved["context_rows"],
-            "context_cols": moved["context_cols"],
-            "context_roles": moved["context_roles"],
-            "context_examples": moved["context_examples"],
-            "context_mask": moved["context_mask"],
-            "target_rows": moved["target_rows"],
-            "target_cols": moved["target_cols"],
-            "target_mask": moved["target_mask"],
-            "steps": sample_steps,
-        }
+        sample_kwargs = structured_sample_kwargs(moved)
+        trace = None
         if inference_mode == "greedy":
-            generated = model.sample(**sample_kwargs)
+            trace = model.sample_with_trace(**sample_kwargs, steps=sample_steps)
+            generated = trace["samples"]
+            token_log_probs = trace["token_log_probs"]
         else:
-            generated = model.sample_ensemble(
+            generated, token_log_probs = model._sample_ensemble_with_scores(
                 **sample_kwargs,
+                steps=sample_steps,
                 num_candidates=num_candidates,
                 temperature_start=temperature_start,
                 temperature_end=temperature_end,
@@ -200,13 +369,88 @@ def evaluate_structured(
             )
         expected = moved["target_colors"]
         target_mask = moved["target_mask"].bool()
-        if torch.equal(generated[target_mask].cpu(), expected[target_mask].cpu()):
+        prediction_metrics = structured_prediction_metrics(
+            generated,
+            expected,
+            target_mask,
+            token_log_probs,
+        )
+        if prediction_metrics["exact"]:
             exact += 1
+        cell_count = int(prediction_metrics["cell_count"])
+        total_cells += cell_count
+        correct_cells += int(prediction_metrics["correct_count"])
+        nonzero_iou_sum += float(prediction_metrics["nonzero_iou"])
+        color_hist_l1_sum += float(prediction_metrics["color_hist_l1"])
+        token_log_prob_sum += float(prediction_metrics["mean_token_log_prob"]) * cell_count
+        confidence_sum += float(prediction_metrics["mean_confidence"]) * cell_count
+
+        shape = batch["target_shapes"][0]
+        task_id = str(batch["task_ids"][0])
+        example_row = {
+            "task_id": task_id,
+            "target_shape": list(shape),
+            "exact": prediction_metrics["exact"],
+            "cell_acc": prediction_metrics["cell_acc"],
+            "nonzero_iou": prediction_metrics["nonzero_iou"],
+            "color_hist_l1": prediction_metrics["color_hist_l1"],
+            "mean_token_log_prob": prediction_metrics["mean_token_log_prob"],
+            "mean_confidence": prediction_metrics["mean_confidence"],
+        }
+        examples.append(example_row)
+        if debug_dir is not None and idx < debug_limit:
+            debug_payload = _structured_debug_payload(
+                task_id=task_id,
+                shape=shape,
+                expected=expected[0],
+                generated=generated[0],
+                token_log_probs=token_log_probs[0],
+                trace=trace,
+                metrics=prediction_metrics,
+            )
+            _write_json(debug_dir / f"{idx:04d}_{task_id}.json", debug_payload)
 
     model.train()
     if total == 0:
-        return {"exact": 0.0, "valid": 1.0}
-    return {"exact": exact / total, "valid": 1.0}
+        summary = {
+            "exact": 0.0,
+            "valid": 1.0,
+            "cell_acc": 0.0,
+            "nonzero_iou": 0.0,
+            "color_hist_l1": 0.0,
+            "mean_token_log_prob": 0.0,
+            "mean_confidence": 0.0,
+        }
+    else:
+        summary = {
+            "exact": exact / total,
+            "valid": 1.0,
+            "cell_acc": correct_cells / max(total_cells, 1),
+            "nonzero_iou": nonzero_iou_sum / total,
+            "color_hist_l1": color_hist_l1_sum / total,
+            "mean_token_log_prob": token_log_prob_sum / max(total_cells, 1),
+            "mean_confidence": confidence_sum / max(total_cells, 1),
+        }
+    if eval_report is not None:
+        _write_json(
+            eval_report,
+            {
+                "summary": summary,
+                "examples": examples,
+                "metadata": {
+                    "architecture": "structured_encoder",
+                    "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
+                    "inference_mode": inference_mode,
+                    "num_candidates": num_candidates,
+                    "sample_steps": sample_steps,
+                    "temperature_start": temperature_start,
+                    "temperature_end": temperature_end,
+                    "ensemble_strategy": ensemble_strategy,
+                    "args": _jsonable_args(args),
+                },
+            },
+        )
+    return summary
 
 
 def build_serialized_dataset(args: argparse.Namespace) -> tuple[ArcDataset, ArcDataset | None]:
@@ -291,6 +535,11 @@ def parse_args() -> argparse.Namespace:
         help="Weight for intermediate structured refinement losses.",
     )
     parser.add_argument(
+        "--use-object-features",
+        action="store_true",
+        help="Condition the structured encoder on connected-component object metadata.",
+    )
+    parser.add_argument(
         "--augment-color-permutation",
         action="store_true",
         help="Add a consistent color-permuted copy of each structured ARC task.",
@@ -319,6 +568,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-limit", type=int, default=50)
     parser.add_argument("--sample-steps", type=int, default=64)
     parser.add_argument("--eval-only", action="store_true")
+    parser.add_argument("--eval-report", type=Path, default=None)
+    parser.add_argument("--debug-dir", type=Path, default=None)
+    parser.add_argument("--debug-limit", type=int, default=5)
     parser.add_argument(
         "--inference-mode",
         choices=["greedy", "ensemble"],
@@ -392,8 +644,16 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
             temperature_start=args.temperature_start,
             temperature_end=args.temperature_end,
             ensemble_strategy=args.ensemble_strategy,
+            eval_report=args.eval_report,
+            debug_dir=args.debug_dir,
+            debug_limit=args.debug_limit,
+            args=args,
+            checkpoint_path=args.resume,
         )
-        print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
+        print(
+            f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
+            f"cell_acc={metrics['cell_acc']:.3%}"
+        )
         return
     if train_dataset is None:
         raise FileNotFoundError("no ARC train JSON files found")
@@ -461,18 +721,7 @@ def run_training_loop(
                 loss_mask=moved["loss_mask"],
             )
         else:
-            out = model(
-                context_colors=moved["context_colors"],
-                context_rows=moved["context_rows"],
-                context_cols=moved["context_cols"],
-                context_roles=moved["context_roles"],
-                context_examples=moved["context_examples"],
-                context_mask=moved["context_mask"],
-                target_colors=moved["target_colors"],
-                target_rows=moved["target_rows"],
-                target_cols=moved["target_cols"],
-                target_mask=moved["target_mask"],
-            )
+            out = model(**structured_forward_kwargs(moved))
         out["loss"].backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -501,10 +750,21 @@ def run_training_loop(
                     temperature_start=args.temperature_start,
                     temperature_end=args.temperature_end,
                     ensemble_strategy=args.ensemble_strategy,
+                    eval_report=args.eval_report,
+                    debug_dir=args.debug_dir,
+                    debug_limit=args.debug_limit,
+                    args=args,
+                    checkpoint_path=args.resume,
                 )
             else:
                 metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
-            print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
+            if args.arch == "structured_encoder":
+                print(
+                    f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
+                    f"cell_acc={metrics['cell_acc']:.3%}"
+                )
+            else:
+                print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
 
         if step > 0 and step % args.save_every == 0:
             save_checkpoint(
