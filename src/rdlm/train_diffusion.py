@@ -4,12 +4,13 @@ train_diffusion.py — Train the Recursive Diffusion Language Model.
 Trains using masked diffusion (MDLM) loss and demonstrates generation.
 """
 
-import torch
-from torch.utils.data import Dataset, DataLoader
 import time
 
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+from rdlm.diffusion_lm import NoiseSchedule, RecursiveDiffusionLM
 from rdlm.trm import TinyRecursiveModel
-from rdlm.diffusion_lm import RecursiveDiffusionLM, NoiseSchedule
 
 
 class CharLevelDataset(Dataset):
@@ -20,7 +21,7 @@ class CharLevelDataset(Dataset):
     """
 
     def __init__(self, text: str, seq_len: int = 32):
-        chars = sorted(list(set(text)))
+        chars = sorted(set(text))
         self.vocab_size = len(chars)
         self.char_to_idx = {c: i for i, c in enumerate(chars)}
         self.idx_to_char = {i: c for c, i in self.char_to_idx.items()}
@@ -150,7 +151,7 @@ The cow stood in the field and the horse ran in the park."""
             block_size=seq_len,
         )
         text = decode_tokens(generated[0].tolist(), dataset.idx_to_char, dataset.mask_token_id)
-        print(f'  {repr(text)}')
+        print(f"  {text!r}")
 
     # Generate with prompt
     print("\n--- With prompt ---")
@@ -165,8 +166,8 @@ The cow stood in the field and the horse ran in the park."""
                 block_size=seq_len,
             )
             text = decode_tokens(generated[0], dataset.idx_to_char, dataset.mask_token_id)
-            print(f'  Prompt: {repr(prompt_text)}')
-            print(f'  Result: {repr(text)}')
+            print(f"  Prompt: {prompt_text!r}")
+            print(f"  Result: {text!r}")
             print()
 
 

@@ -11,9 +11,9 @@ No biases anywhere (following modern practice).
 """
 
 import torch
-import torch.nn.functional as F
-from torch import nn, Tensor
+import torch.nn.functional as functional
 from einops import rearrange
+from torch import Tensor, nn
 
 
 def exists(v):
@@ -84,7 +84,7 @@ class Attention(nn.Module):
         self.register_buffer("rope_sin", None, persistent=False)
 
     def forward(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
-        batch, seq_len, _ = x.shape
+        _batch, seq_len, _ = x.shape
 
         # Lazily compute RoPE for the max sequence length we've seen
         if self.rope_cos is None or seq_len > self.rope_cos.shape[0]:
@@ -101,7 +101,7 @@ class Attention(nn.Module):
         k = apply_rope(k, self.rope_cos, self.rope_sin)
 
         # Scaled dot-product attention
-        scale = self.head_dim ** -0.5
+        scale = self.head_dim**-0.5
         attn = torch.matmul(q, k.transpose(-2, -1)) * scale
 
         # Mask out padding positions (mask: (batch, seq_len), 1 = valid, 0 = pad)
@@ -119,8 +119,7 @@ class Attention(nn.Module):
 class SwiGLU(nn.Module):
     """SwiGLU feed-forward network: Swish-gated linear unit.
 
-    SwiGLU(x) = (xW₁ ⊙ σ(xW₂)) · W₃
-    where σ is SiLU (Swish), and ⊙ is element-wise multiplication.
+    SwiGLU(x) = (xW1 * SiLU(xW2)) * W3.
     """
 
     def __init__(self, dim: int, hidden_multiple: int = 4):
@@ -131,10 +130,10 @@ class SwiGLU(nn.Module):
         self.w3 = nn.Linear(hidden_dim, dim, bias=False)
 
     def forward(self, x: Tensor) -> Tensor:
-        # SwiGLU: (xW₁) * SiLU(xW₂) projected back
+        # SwiGLU: (xW1) * SiLU(xW2) projected back
         x1 = self.w1(x)
         x2 = self.w2(x)
-        hidden = x1 * F.silu(x2)
+        hidden = x1 * functional.silu(x2)
         return self.w3(hidden)
 
 
@@ -142,7 +141,7 @@ class TinyBlock(nn.Module):
     """The 2-layer recursive block for TRM.
 
     Architecture:
-      x → RMSNorm → Attention → ✕ α_attn → + → RMSNorm → SwiGLU → ✕ α_ff → + → out
+      x -> RMSNorm -> Attention -> alpha_attn -> + -> RMSNorm -> SwiGLU -> alpha_ff -> + -> out
 
     Each sublayer has a **learnable residual scale** (like ReZero):
     - Initialized to 0 so the block starts as identity (prevents blow-up)

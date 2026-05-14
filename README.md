@@ -55,3 +55,8 @@ Use `--eval-dir` for held-out ARC JSON files with `test[*].output` populated.
 Use `--resume checkpoints/arc/latest.pt` to continue a stopped run.
 If `--device cuda` is requested on a host without CUDA-enabled PyTorch, the
 trainer exits with an explicit error instead of falling back to CPU/MPS.
+
+Structured encoder training also supports optional memory/regularization controls:
+`--gradient-checkpointing`, `--aux-loss-weight`, `--stochastic-depth-prob`,
+`--augment-color-permutation`, `--augment-translation`, `--augment-grid-noise`,
+and `--curriculum`.

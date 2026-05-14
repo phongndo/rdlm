@@ -67,6 +67,9 @@ def create_structured_model(args: argparse.Namespace) -> ArcOutputDiffusion:
         dim=args.dim,
         max_grid_size=args.max_grid_size,
         max_examples=args.max_examples,
+        gradient_checkpointing=args.gradient_checkpointing,
+        stochastic_depth_prob=args.stochastic_depth_prob,
+        aux_loss_weight=args.aux_loss_weight,
     )
 
 
@@ -161,9 +164,7 @@ def evaluate_structured(
     for idx in range(total):
         batch = collate_structured_arc_examples([dataset[idx]])
         moved = {
-            key: value.to(device)
-            for key, value in batch.items()
-            if isinstance(value, torch.Tensor)
+            key: value.to(device) for key, value in batch.items() if isinstance(value, torch.Tensor)
         }
         generated = model.sample(
             context_colors=moved["context_colors"],
@@ -211,6 +212,10 @@ def build_structured_dataset(
         train_files,
         max_grid_size=args.max_grid_size,
         max_examples=args.max_examples,
+        augment_color_permutation=args.augment_color_permutation,
+        augment_translation=args.augment_translation,
+        augment_grid_noise=args.augment_grid_noise,
+        curriculum=args.curriculum,
     )
 
     eval_dataset = None
@@ -244,6 +249,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-grid-size", type=int, default=30)
     parser.add_argument("--max-examples", type=int, default=8)
     parser.add_argument("--dim", type=int, default=256)
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action="store_true",
+        help="Checkpoint structured refinement blocks to keep full gradients with lower memory.",
+    )
+    parser.add_argument(
+        "--stochastic-depth-prob",
+        type=float,
+        default=0.0,
+        help="Drop non-final structured refinement blocks with this probability during training.",
+    )
+    parser.add_argument(
+        "--aux-loss-weight",
+        type=float,
+        default=0.0,
+        help="Weight for intermediate structured refinement losses.",
+    )
+    parser.add_argument(
+        "--augment-color-permutation",
+        action="store_true",
+        help="Add a consistent color-permuted copy of each structured ARC task.",
+    )
+    parser.add_argument(
+        "--augment-translation",
+        action="store_true",
+        help="Add a translated copy of each structured ARC task when nonzero cells fit in bounds.",
+    )
+    parser.add_argument(
+        "--augment-grid-noise",
+        action="store_true",
+        help="Add a copy of each structured ARC task with sparse input-only distractor cells.",
+    )
+    parser.add_argument(
+        "--curriculum",
+        action="store_true",
+        help="Sort structured ARC examples from smaller/simpler to larger/harder.",
+    )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--steps", type=int, default=20000)

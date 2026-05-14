@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -157,9 +158,7 @@ def build_examples_from_task(task_id: str, task: dict[str, Any], seq_len: int) -
     train_pairs: list[Pair] = [
         pair for pair in task["train"] if "input" in pair and "output" in pair
     ]
-    test_pairs: list[Pair] = [
-        pair for pair in task["test"] if "input" in pair and "output" in pair
-    ]
+    test_pairs: list[Pair] = [pair for pair in task["test"] if "input" in pair and "output" in pair]
     raw_examples: list[tuple[list[Pair], Grid, Grid]] = []
 
     for idx, pair in enumerate(train_pairs):
@@ -212,6 +211,131 @@ def _grid_fits(grid: Grid, max_grid_size: int) -> bool:
     return bool(grid) and len(grid) <= max_grid_size and len(grid[0]) <= max_grid_size
 
 
+def _copy_grid(grid: Grid) -> Grid:
+    return [row[:] for row in grid]
+
+
+def _copy_task(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "train": [
+            {"input": _copy_grid(pair["input"]), "output": _copy_grid(pair["output"])}
+            for pair in task["train"]
+            if "input" in pair and "output" in pair
+        ],
+        "test": [
+            {"input": _copy_grid(pair["input"]), "output": _copy_grid(pair["output"])}
+            for pair in task["test"]
+            if "input" in pair and "output" in pair
+        ],
+    }
+
+
+def _permute_grid_colors(grid: Grid, permutation: list[int]) -> Grid:
+    return [[permutation[cell] for cell in row] for row in grid]
+
+
+def _apply_color_permutation(task: dict[str, Any]) -> dict[str, Any]:
+    permutation = list(range(10))
+    random.shuffle(permutation)
+    augmented = _copy_task(task)
+    for split in ("train", "test"):
+        for pair in augmented[split]:
+            pair["input"] = _permute_grid_colors(pair["input"], permutation)
+            pair["output"] = _permute_grid_colors(pair["output"], permutation)
+    return augmented
+
+
+def _all_nonzero_cells(task: dict[str, Any]) -> list[tuple[int, int, int, int]]:
+    cells: list[tuple[int, int, int, int]] = []
+    for split in ("train", "test"):
+        for pair in task[split]:
+            for key in ("input", "output"):
+                grid = pair[key]
+                height = len(grid)
+                width = len(grid[0])
+                for row_idx, row in enumerate(grid):
+                    for col_idx, color in enumerate(row):
+                        if color != 0:
+                            cells.append((row_idx, col_idx, height, width))
+    return cells
+
+
+def _translate_grid(grid: Grid, row_shift: int, col_shift: int) -> Grid:
+    translated = [[0 for _ in row] for row in grid]
+    for row_idx, row in enumerate(grid):
+        for col_idx, color in enumerate(row):
+            if color == 0:
+                continue
+            translated[row_idx + row_shift][col_idx + col_shift] = color
+    return translated
+
+
+def _apply_translation(task: dict[str, Any]) -> dict[str, Any]:
+    cells = _all_nonzero_cells(task)
+    if not cells:
+        return _copy_task(task)
+    min_row_shift = max(-row for row, _col, _height, _width in cells)
+    max_row_shift = min(height - 1 - row for row, _col, height, _width in cells)
+    min_col_shift = max(-col for _row, col, _height, _width in cells)
+    max_col_shift = min(width - 1 - col for _row, col, _height, width in cells)
+    shifts = [
+        (row_shift, col_shift)
+        for row_shift in range(min_row_shift, max_row_shift + 1)
+        for col_shift in range(min_col_shift, max_col_shift + 1)
+        if row_shift != 0 or col_shift != 0
+    ]
+    if not shifts:
+        return _copy_task(task)
+    row_shift, col_shift = random.choice(shifts)
+    augmented = _copy_task(task)
+    for split in ("train", "test"):
+        for pair in augmented[split]:
+            pair["input"] = _translate_grid(pair["input"], row_shift, col_shift)
+            pair["output"] = _translate_grid(pair["output"], row_shift, col_shift)
+    return augmented
+
+
+def _add_grid_noise(grid: Grid, noise_prob: float = 0.02) -> Grid:
+    noisy = _copy_grid(grid)
+    for row_idx, row in enumerate(noisy):
+        for col_idx, color in enumerate(row):
+            if color == 0 and random.random() < noise_prob:
+                noisy[row_idx][col_idx] = random.randint(1, 9)
+    return noisy
+
+
+def _apply_input_noise(task: dict[str, Any]) -> dict[str, Any]:
+    augmented = _copy_task(task)
+    for split in ("train", "test"):
+        for pair in augmented[split]:
+            pair["input"] = _add_grid_noise(pair["input"])
+    return augmented
+
+
+def augment_structured_task(
+    task: dict[str, Any],
+    color_permutation: bool = False,
+    translation: bool = False,
+    grid_noise: bool = False,
+) -> list[dict[str, Any]]:
+    """Return deterministic originals plus one-task augmentation variants."""
+    variants = [_copy_task(task)]
+    if color_permutation:
+        variants.append(_apply_color_permutation(task))
+    if translation:
+        variants.append(_apply_translation(task))
+    if grid_noise:
+        variants.append(_apply_input_noise(task))
+    return variants
+
+
+def structured_example_difficulty(example: ArcStructuredExample) -> int:
+    target_area = example.target_height * example.target_width
+    context_area = len(example.context_colors)
+    num_colors = len(set(example.context_colors) | set(example.target_colors))
+    return target_area + context_area + (num_colors * 10)
+
+
 def build_structured_examples_from_task(
     task_id: str,
     task: dict[str, Any],
@@ -222,9 +346,7 @@ def build_structured_examples_from_task(
     train_pairs: list[Pair] = [
         pair for pair in task["train"] if "input" in pair and "output" in pair
     ]
-    test_pairs: list[Pair] = [
-        pair for pair in task["test"] if "input" in pair and "output" in pair
-    ]
+    test_pairs: list[Pair] = [pair for pair in task["test"] if "input" in pair and "output" in pair]
     raw_examples: list[tuple[list[Pair], Grid, Grid]] = []
     for idx, pair in enumerate(train_pairs):
         demos = [demo for demo_idx, demo in enumerate(train_pairs) if demo_idx != idx]
@@ -342,22 +464,44 @@ class ArcDataset(Dataset):
 class ArcStructuredDataset(Dataset):
     """Map-style dataset of grid-native ARC examples."""
 
-    def __init__(self, files: list[str | Path], max_grid_size: int = 30, max_examples: int = 8):
+    def __init__(
+        self,
+        files: list[str | Path],
+        max_grid_size: int = 30,
+        max_examples: int = 8,
+        augment_color_permutation: bool = False,
+        augment_translation: bool = False,
+        augment_grid_noise: bool = False,
+        curriculum: bool = False,
+    ):
         self.examples: list[ArcStructuredExample] = []
         self.skipped_tasks = 0
         for path in files:
             try:
                 task = load_arc_task(path)
-                examples = build_structured_examples_from_task(
-                    Path(path).stem,
+                examples: list[ArcStructuredExample] = []
+                variants = augment_structured_task(
                     task,
-                    max_grid_size=max_grid_size,
-                    max_examples=max_examples,
+                    color_permutation=augment_color_permutation,
+                    translation=augment_translation,
+                    grid_noise=augment_grid_noise,
                 )
+                for variant_idx, variant in enumerate(variants):
+                    suffix = "" if variant_idx == 0 else f":aug{variant_idx}"
+                    examples.extend(
+                        build_structured_examples_from_task(
+                            f"{Path(path).stem}{suffix}",
+                            variant,
+                            max_grid_size=max_grid_size,
+                            max_examples=max_examples,
+                        )
+                    )
             except ValueError:
                 self.skipped_tasks += 1
                 continue
             self.examples.extend(examples)
+        if curriculum:
+            self.examples.sort(key=structured_example_difficulty)
         if not self.examples:
             raise ValueError("no structured ARC examples found")
 

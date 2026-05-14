@@ -8,12 +8,15 @@ import torch
 from rdlm.arc import (
     ArcDataset,
     ArcStructuredDataset,
+    _add_grid_noise,
+    augment_structured_task,
     build_examples_from_task,
     build_structured_examples_from_task,
     collate_arc_examples,
     collate_structured_arc_examples,
     parse_grid,
     serialize_grid,
+    structured_example_difficulty,
 )
 from rdlm.arc_model import ArcOutputDiffusion
 from rdlm.diffusion_lm import RecursiveDiffusionLM
@@ -67,6 +70,72 @@ class ArcSerializationTests(unittest.TestCase):
         self.assertTrue(batch["context_mask"].any())
         self.assertEqual(batch["target_shapes"], [(1, 1)])
 
+    def test_color_permutation_is_consistent_across_task(self):
+        task = {
+            "train": [{"input": [[1, 2]], "output": [[3, 4]]}],
+            "test": [{"input": [[1, 3]], "output": [[2, 4]]}],
+        }
+        variants = augment_structured_task(task, color_permutation=True)
+        augmented = variants[1]
+
+        mapping = {
+            task["train"][0]["input"][0][0]: augmented["train"][0]["input"][0][0],
+            task["train"][0]["input"][0][1]: augmented["train"][0]["input"][0][1],
+            task["train"][0]["output"][0][0]: augmented["train"][0]["output"][0][0],
+            task["train"][0]["output"][0][1]: augmented["train"][0]["output"][0][1],
+        }
+        self.assertEqual(augmented["test"][0]["input"][0][0], mapping[1])
+        self.assertEqual(augmented["test"][0]["input"][0][1], mapping[3])
+        self.assertEqual(augmented["test"][0]["output"][0][0], mapping[2])
+        self.assertEqual(augmented["test"][0]["output"][0][1], mapping[4])
+
+    def test_translation_keeps_nonzero_cells_in_bounds(self):
+        task = {
+            "train": [{"input": [[0, 1, 0]], "output": [[0, 2, 0]]}],
+            "test": [{"input": [[0, 3, 0]], "output": [[0, 4, 0]]}],
+        }
+        variants = augment_structured_task(task, translation=True)
+        augmented = variants[1]
+
+        for split in ("train", "test"):
+            for pair in augmented[split]:
+                for grid in (pair["input"], pair["output"]):
+                    self.assertEqual(len(grid), 1)
+                    self.assertEqual(len(grid[0]), 3)
+                    self.assertEqual(sum(cell != 0 for row in grid for cell in row), 1)
+
+    def test_grid_noise_only_adds_input_distractors(self):
+        task = {
+            "train": [{"input": [[0, 0], [0, 0]], "output": [[1, 0], [0, 0]]}],
+            "test": [{"input": [[0, 0], [0, 0]], "output": [[2, 0], [0, 0]]}],
+        }
+        noisy_input = _add_grid_noise(task["train"][0]["input"], noise_prob=1.0)
+        self.assertTrue(all(cell != 0 for row in noisy_input for cell in row))
+
+        variants = augment_structured_task(task, grid_noise=True)
+        augmented = variants[1]
+        self.assertEqual(augmented["train"][0]["output"], task["train"][0]["output"])
+        self.assertEqual(augmented["test"][0]["output"], task["test"][0]["output"])
+
+    def test_structured_curriculum_sorts_by_difficulty(self):
+        easy = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4]]}],
+        }
+        hard = {
+            "train": [{"input": [[1, 2], [3, 4]], "output": [[5, 6], [7, 8]]}],
+            "test": [{"input": [[1, 2], [3, 4]], "output": [[5, 6], [7, 8]]}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            hard_path = Path(tmp) / "hard.json"
+            easy_path = Path(tmp) / "easy.json"
+            hard_path.write_text(json.dumps(hard), encoding="utf-8")
+            easy_path.write_text(json.dumps(easy), encoding="utf-8")
+            dataset = ArcStructuredDataset([hard_path, easy_path], curriculum=True)
+
+        difficulties = [structured_example_difficulty(example) for example in dataset.examples]
+        self.assertEqual(difficulties, sorted(difficulties))
+
 
 class ArcTrainingSmokeTests(unittest.TestCase):
     def test_one_conditional_diffusion_step(self):
@@ -115,6 +184,74 @@ class ArcTrainingSmokeTests(unittest.TestCase):
         optimizer.step()
 
         self.assertTrue(torch.isfinite(out["loss"]))
+
+    def test_structured_refinement_checkpointing_keeps_initial_state_gradients(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[0]])
+        model = ArcOutputDiffusion(
+            dim=32,
+            max_grid_size=30,
+            max_examples=8,
+            num_heads=4,
+            num_refinement_blocks=2,
+            gradient_checkpointing=True,
+        )
+
+        out = model(
+            context_colors=batch["context_colors"],
+            context_rows=batch["context_rows"],
+            context_cols=batch["context_cols"],
+            context_roles=batch["context_roles"],
+            context_examples=batch["context_examples"],
+            context_mask=batch["context_mask"],
+            target_colors=batch["target_colors"],
+            target_rows=batch["target_rows"],
+            target_cols=batch["target_cols"],
+            target_mask=batch["target_mask"],
+        )
+        out["loss"].backward()
+
+        self.assertIsNotNone(model.output_init.grad)
+        self.assertIsNotNone(model.latent_init.grad)
+        self.assertGreater(float(model.output_init.grad.norm()), 0.0)
+        self.assertGreater(float(model.latent_init.grad.norm()), 0.0)
+
+    def test_structured_aux_loss_backward(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[0]])
+        model = ArcOutputDiffusion(
+            dim=32,
+            max_grid_size=30,
+            max_examples=8,
+            num_heads=4,
+            num_refinement_blocks=3,
+            aux_loss_weight=0.25,
+        )
+
+        out = model(
+            context_colors=batch["context_colors"],
+            context_rows=batch["context_rows"],
+            context_cols=batch["context_cols"],
+            context_roles=batch["context_roles"],
+            context_examples=batch["context_examples"],
+            context_mask=batch["context_mask"],
+            target_colors=batch["target_colors"],
+            target_rows=batch["target_rows"],
+            target_cols=batch["target_cols"],
+            target_mask=batch["target_mask"],
+        )
+        out["loss"].backward()
+
+        self.assertTrue(torch.isfinite(out["loss"]))
+        self.assertTrue(torch.isfinite(out["aux_loss"]))
 
 
 if __name__ == "__main__":

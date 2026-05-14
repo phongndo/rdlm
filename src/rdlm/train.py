@@ -5,16 +5,14 @@ Stripped down to debug the core learning dynamics.
 """
 
 import torch
-from torch import nn
-from torch.utils.data import Dataset, DataLoader
-import time
+from torch.utils.data import DataLoader, Dataset
 
 from rdlm.trm import TinyRecursiveModel
 
 
 class TinyTextDataset(Dataset):
     def __init__(self, text: str, seq_len: int = 16):
-        chars = sorted(list(set(text)))
+        chars = sorted(set(text))
         self.vocab_size = len(chars)
         self.char_to_idx = {c: i for i, c in enumerate(chars)}
         self.idx_to_char = {i: c for c, i in self.char_to_idx.items()}
@@ -79,8 +77,6 @@ def main():
     model.train()
     losses = []
     accuracies = []
-    best_loss = float("inf")
-
     print(f"{'Step':>6} {'Loss':>10} {'Acc':>8} {'LR':>10} {'Alphas':>14}")
     print("-" * 52)
 

@@ -79,10 +79,13 @@ class NoiseSchedule:
         target_counts = torch.clamp(target_counts, zero, num_masks.unsqueeze(-1))
 
         # Tokens to reveal THIS step = cumulative[t] - cumulative[t-1]
-        prev_counts = torch.cat([
-            torch.zeros(batch, 1, device=mask_index.device, dtype=torch.long),
-            target_counts[:, :-1],
-        ], dim=-1)
+        prev_counts = torch.cat(
+            [
+                torch.zeros(batch, 1, device=mask_index.device, dtype=torch.long),
+                target_counts[:, :-1],
+            ],
+            dim=-1,
+        )
         transfer = target_counts - prev_counts
 
         if stochastic:
@@ -342,9 +345,9 @@ class RecursiveDiffusionLM(nn.Module):
 
                 # ---- Compute confidence for each prediction ----
                 probs = functional.softmax(logits, dim=-1)
-                confidence = torch.gather(
-                    probs, dim=-1, index=x0_pred.unsqueeze(-1)
-                ).squeeze(-1)  # (batch, seq_len)
+                confidence = torch.gather(probs, dim=-1, index=x0_pred.unsqueeze(-1)).squeeze(
+                    -1
+                )  # (batch, seq_len)
 
                 # ---- Select which tokens to reveal ----
                 # Only consider masked positions in the current block

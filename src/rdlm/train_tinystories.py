@@ -16,13 +16,13 @@ Metrics tracked:
 import argparse
 import math
 import time
-import torch
-from torch import nn
-from torch.utils.data import DataLoader, IterableDataset
-from datasets import load_dataset
 
+import torch
+from datasets import load_dataset
+from torch.utils.data import DataLoader, IterableDataset
+
+from rdlm.diffusion_lm import NoiseSchedule, RecursiveDiffusionLM
 from rdlm.trm import TinyRecursiveModel
-from rdlm.diffusion_lm import RecursiveDiffusionLM, NoiseSchedule
 
 
 class TinyStoriesCharDataset(IterableDataset):
@@ -75,7 +75,11 @@ class TinyStoriesCharDataset(IterableDataset):
         return self.max_examples or 100000
 
 
-def create_model(vocab_size_with_mask: int, dim: int = 128, seq_len: int = 128) -> RecursiveDiffusionLM:
+def create_model(
+    vocab_size_with_mask: int,
+    dim: int = 128,
+    seq_len: int = 128,
+) -> RecursiveDiffusionLM:
     """Create the recursive diffusion LM."""
     backbone = TinyRecursiveModel(
         vocab_size=vocab_size_with_mask,
@@ -140,12 +144,9 @@ def generate_samples(
                 block_size=dataset.seq_len,
             )
 
-            text = "".join(
-                dataset.idx_to_char.get(t.item(), "�")
-                for t in generated[0]
-            )
-            print(f'\n  Prompt: {prompt_text!r}')
-            print(f'  Story:  {text}')
+            text = "".join(dataset.idx_to_char.get(t.item(), "�") for t in generated[0])
+            print(f"\n  Prompt: {prompt_text!r}")
+            print(f"  Story:  {text}")
 
 
 def main():
@@ -161,16 +162,10 @@ def main():
 
     # ── Dataset ──
     print("Loading TinyStories dataset...")
-    train_dataset = TinyStoriesCharDataset(
-        split="train", seq_len=args.seq_len, max_examples=50000
-    )
-    # Small validation set from train split (last 1000)
-    val_dataset = TinyStoriesCharDataset(
-        split="train", seq_len=args.seq_len, max_examples=2000
-    )
-
+    train_dataset = TinyStoriesCharDataset(split="train", seq_len=args.seq_len, max_examples=50000)
     print(f"Character vocab: {train_dataset.vocab_size} chars (+1 [MASK])")
-    print(f"Characters: {''.join(train_dataset.idx_to_char[i] for i in range(train_dataset.vocab_size))}")
+    chars = "".join(train_dataset.idx_to_char[i] for i in range(train_dataset.vocab_size))
+    print(f"Characters: {chars}")
     print()
 
     # ── Model ──
@@ -183,14 +178,17 @@ def main():
     total_params = sum(p.numel() for p in diff_lm.parameters())
     print(f"Model: {total_params:,} params on {device}")
     print(f"  - TinyBlock: {sum(p.numel() for p in diff_lm.backbone.network.parameters()):,}")
-    print(f"  - Recursion: {diff_lm.backbone.num_latent_refinements}x × {diff_lm.backbone.num_refinement_blocks}x = "
-          f"{diff_lm.backbone.num_latent_refinements * diff_lm.backbone.num_refinement_blocks} effective depth")
+    effective_depth = (
+        diff_lm.backbone.num_latent_refinements * diff_lm.backbone.num_refinement_blocks
+    )
+    print(
+        f"  - Recursion: {diff_lm.backbone.num_latent_refinements}x "
+        f"x {diff_lm.backbone.num_refinement_blocks}x = {effective_depth} effective depth"
+    )
     print()
 
     # ── Training ──
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
-
     optimizer = torch.optim.AdamW(diff_lm.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.steps)
 
@@ -200,7 +198,6 @@ def main():
     print("-" * 56)
 
     start_time = time.time()
-    best_loss = float("inf")
     train_iter = iter(train_loader)
 
     for step in range(args.steps):
@@ -233,19 +230,25 @@ def main():
             )
 
             # Generate samples every few logs
-            if step > 0 and (step % (args.log_every * args.eval_samples) == 0 or step == args.steps - 1):
+            should_sample = step > 0 and (
+                step % (args.log_every * args.eval_samples) == 0 or step == args.steps - 1
+            )
+            if should_sample:
                 generate_samples(diff_lm, train_dataset, device)
 
     print()
     print("=" * 60)
     print("Training Complete!")
-    print(f"Final loss: {out['loss'].item():.4f}, perplexity: {compute_perplexity(out['loss'].item()):.2f}")
+    final_loss = out["loss"].item()
+    print(f"Final loss: {final_loss:.4f}, perplexity: {compute_perplexity(final_loss):.2f}")
     print(f"Total time: {time.time() - start_time:.1f}s")
     print("=" * 60)
 
     # Final generation
     generate_samples(
-        diff_lm, train_dataset, device,
+        diff_lm,
+        train_dataset,
+        device,
         prompt_texts=[
             "Once upon a time",
             "She",

@@ -10,9 +10,11 @@ This is the text-adapted version of the TRM architecture from:
   "Less is More: Recursive Reasoning with Tiny Networks" (Samsung SAIL, 2025)
 """
 
+from contextlib import nullcontext
+
 import torch
-from torch import nn, Tensor
 from einops import rearrange
+from torch import Tensor, nn
 
 
 def exists(v):
@@ -30,7 +32,9 @@ class TimestepEmbedding(nn.Module):
     def __init__(self, dim: int, max_period: float = 10000.0):
         super().__init__()
         half_dim = dim // 2
-        freqs = torch.exp(-torch.arange(half_dim).float() * torch.log(torch.tensor(max_period)) / (half_dim - 1))
+        freqs = torch.exp(
+            -torch.arange(half_dim).float() * torch.log(torch.tensor(max_period)) / (half_dim - 1)
+        )
         self.register_buffer("freqs", freqs, persistent=False)
 
         self.net = nn.Sequential(
@@ -168,11 +172,11 @@ class TinyRecursiveModel(nn.Module):
         Returns:
             (batch, seq_len, dim) — embedded sequence
         """
-        batch, seq_len = tokens.shape
+        _batch, seq_len = tokens.shape
 
         # Token embeddings (replace mask tokens with mask_embed)
         if mask_token_id is not None:
-            is_mask = (tokens == mask_token_id)
+            is_mask = tokens == mask_token_id
             token_embeds = self.token_embed(tokens)
             # Where the token is [MASK], use the learnable mask embedding
             token_embeds = torch.where(
@@ -202,7 +206,12 @@ class TinyRecursiveModel(nn.Module):
         latents = self.latent_init.unsqueeze(0).unsqueeze(0).expand(batch, seq_len, -1)
         return outputs, latents
 
-    def _refine_one_block(self, inputs: Tensor, outputs: Tensor, latents: Tensor) -> tuple[Tensor, Tensor]:
+    def _refine_one_block(
+        self,
+        inputs: Tensor,
+        outputs: Tensor,
+        latents: Tensor,
+    ) -> tuple[Tensor, Tensor]:
         """One deep-supervision block: n latent refinements + 1 output refinement.
 
         Args:
@@ -223,7 +232,12 @@ class TinyRecursiveModel(nn.Module):
 
         return outputs, latents
 
-    def _deep_refinement(self, inputs: Tensor, outputs: Tensor, latents: Tensor) -> tuple[Tensor, Tensor]:
+    def _deep_refinement(
+        self,
+        inputs: Tensor,
+        outputs: Tensor,
+        latents: Tensor,
+    ) -> tuple[Tensor, Tensor]:
         """Run all T deep-supervision blocks.
 
         Only the last block receives gradients (the rest use torch.no_grad).
@@ -316,13 +330,11 @@ class TinyRecursiveModel(nn.Module):
 
         # Halting loss: should the model have halted?
         # A sample is "correct" if all its tokens match
-        is_correct = (logits.argmax(dim=-1) == labels)  # (batch, seq_len)
+        is_correct = logits.argmax(dim=-1) == labels  # (batch, seq_len)
         if mask is not None:
             is_correct = is_correct | (~mask.bool())
         all_correct = is_correct.all(dim=-1).float()  # (batch,)
-        halt_loss = nn.functional.binary_cross_entropy_with_logits(
-            halt_logits, all_correct
-        )
+        halt_loss = nn.functional.binary_cross_entropy_with_logits(halt_logits, all_correct)
 
         total_loss = token_loss + halt_loss
 
@@ -355,8 +367,6 @@ class TinyRecursiveModel(nn.Module):
         Returns:
             (batch, prompt_len + max_new_tokens) — full generated sequence
         """
-        batch = prompt.shape[0]
-        device = prompt.device
         generated = prompt.clone()
 
         for _ in range(max_new_tokens):
@@ -377,10 +387,6 @@ class TinyRecursiveModel(nn.Module):
             generated = torch.cat([generated, next_token], dim=-1)
 
         return generated
-
-
-# Context manager for torch.no_grad (used in _deep_refinement)
-from contextlib import nullcontext
 
 
 if __name__ == "__main__":

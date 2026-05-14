@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
-
 import torch
 import torch.nn.functional as functional
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
 from rdlm.diffusion_lm import NoiseSchedule
 from rdlm.tiny_block import TinyBlock
@@ -64,8 +63,15 @@ class ArcOutputDiffusion(nn.Module):
         num_latent_refinements: int = 6,
         num_refinement_blocks: int = 2,
         noise_schedule: NoiseSchedule | None = None,
+        gradient_checkpointing: bool = False,
+        stochastic_depth_prob: float = 0.0,
+        aux_loss_weight: float = 0.0,
     ):
         super().__init__()
+        if not 0.0 <= stochastic_depth_prob < 1.0:
+            raise ValueError("stochastic_depth_prob must be in [0, 1)")
+        if aux_loss_weight < 0.0:
+            raise ValueError("aux_loss_weight must be non-negative")
         self.dim = dim
         self.noise_schedule = noise_schedule or NoiseSchedule()
         self.encoder = ArcStructuredEncoder(
@@ -88,6 +94,9 @@ class ArcOutputDiffusion(nn.Module):
         self.to_logits = nn.Linear(dim, NUM_OUTPUT_COLORS, bias=False)
         self.num_latent_refinements = num_latent_refinements
         self.num_refinement_blocks = num_refinement_blocks
+        self.gradient_checkpointing = gradient_checkpointing
+        self.stochastic_depth_prob = stochastic_depth_prob
+        self.aux_loss_weight = aux_loss_weight
 
     @property
     def device(self) -> torch.device:
@@ -137,17 +146,65 @@ class ArcOutputDiffusion(nn.Module):
             + time_emb
         )
 
-    def _refine(self, inputs: Tensor, attention_mask: Tensor) -> Tensor:
+    def _refine_one_block(
+        self,
+        outputs: Tensor,
+        latents: Tensor,
+        inputs: Tensor,
+        attention_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        for _ in range(self.num_latent_refinements):
+            latents = self.network(outputs + latents + inputs, mask=attention_mask)
+        outputs = self.network(outputs + latents, mask=attention_mask)
+        return outputs, latents
+
+    def _should_skip_refinement_block(self, block_idx: int) -> bool:
+        if not self.training or self.stochastic_depth_prob == 0.0:
+            return False
+        if block_idx == self.num_refinement_blocks - 1:
+            return False
+        return bool(torch.rand((), device=self.device) < self.stochastic_depth_prob)
+
+    def _refine(
+        self,
+        inputs: Tensor,
+        attention_mask: Tensor,
+        return_intermediate: bool = False,
+    ) -> Tensor | tuple[Tensor, list[Tensor]]:
         batch, seq_len, _dim = inputs.shape
         outputs = self.output_init.unsqueeze(0).unsqueeze(0).expand(batch, seq_len, -1)
         latents = self.latent_init.unsqueeze(0).unsqueeze(0).expand(batch, seq_len, -1)
+        intermediates: list[Tensor] = []
         for block_idx in range(self.num_refinement_blocks):
-            context = torch.no_grad if block_idx < self.num_refinement_blocks - 1 else nullcontext
-            with context():
-                for _ in range(self.num_latent_refinements):
-                    latents = self.network(outputs + latents + inputs, mask=attention_mask)
-                outputs = self.network(outputs + latents, mask=attention_mask)
+            if self._should_skip_refinement_block(block_idx):
+                if return_intermediate:
+                    intermediates.append(outputs)
+                continue
+            if self.gradient_checkpointing and self.training:
+                outputs, latents = checkpoint(
+                    self._refine_one_block,
+                    outputs,
+                    latents,
+                    inputs,
+                    attention_mask,
+                    use_reentrant=False,
+                )
+            else:
+                outputs, latents = self._refine_one_block(outputs, latents, inputs, attention_mask)
+            if return_intermediate:
+                intermediates.append(outputs)
+        if return_intermediate:
+            return outputs, intermediates
         return outputs
+
+    def _masked_loss(self, logits: Tensor, target_colors: Tensor, effective_mask: Tensor) -> Tensor:
+        loss_all = functional.cross_entropy(
+            logits.permute(0, 2, 1),
+            target_colors,
+            reduction="none",
+        )
+        n_masked = effective_mask.sum()
+        return (loss_all * effective_mask.float()).sum() / n_masked
 
     def forward(
         self,
@@ -176,17 +233,33 @@ class ArcOutputDiffusion(nn.Module):
         target_inputs = self._target_inputs(noisy_targets, target_rows, target_cols, t)
         inputs = torch.cat([context_inputs, target_inputs], dim=1)
         attention_mask = torch.cat([context_mask, target_mask], dim=1)
-        outputs = self._refine(inputs, attention_mask)
+        refined = self._refine(
+            inputs,
+            attention_mask,
+            return_intermediate=self.aux_loss_weight > 0.0,
+        )
+        if self.aux_loss_weight > 0.0:
+            outputs, intermediates = refined
+        else:
+            outputs = refined
+            intermediates = []
         target_outputs = outputs[:, context_inputs.shape[1] :]
         logits = self.to_logits(target_outputs)
-        loss_all = functional.cross_entropy(
-            logits.permute(0, 2, 1),
-            target_colors,
-            reduction="none",
-        )
         effective_mask = is_masked & target_mask.bool()
         n_masked = effective_mask.sum()
-        loss = (loss_all * effective_mask.float()).sum() / n_masked
+        loss = self._masked_loss(logits, target_colors, effective_mask)
+        aux_loss = torch.zeros((), device=target_colors.device)
+        if self.aux_loss_weight > 0.0 and len(intermediates) > 1:
+            aux_terms = [
+                self._masked_loss(
+                    self.to_logits(block_outputs[:, context_inputs.shape[1] :]),
+                    target_colors,
+                    effective_mask,
+                )
+                for block_outputs in intermediates[:-1]
+            ]
+            aux_loss = torch.stack(aux_terms).mean()
+            loss = loss + self.aux_loss_weight * aux_loss
         with torch.no_grad():
             preds = logits.argmax(dim=-1)
             correct = ((preds == target_colors) & effective_mask).float().sum()
@@ -197,6 +270,7 @@ class ArcOutputDiffusion(nn.Module):
             "masked_acc": masked_acc,
             "masked_ratio": is_masked.float().mean(),
             "n_masked": n_masked,
+            "aux_loss": aux_loss,
         }
 
     @torch.no_grad()
