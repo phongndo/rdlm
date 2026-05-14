@@ -1,7 +1,7 @@
 [project]
-name = "tr-dllm"
+name = "rdlm"
 version = "0.1.0"
-description = "Tiny Recursive Diffusion Large Learning Model"
+description = "Recursive Diffusion Language Model"
 readme = "README.md"
 authors = [
     { name = "phongndo", email = "donguyenphong@icloud.com" }
@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tr-dllm = "tr_dllm:main"
+rdlm = "rdlm:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
@@ -48,7 +48,7 @@ select = [
 ignore = []
 
 [tool.ruff.lint.isort]
-known-first-party = ["tr_dllm"]
+known-first-party = ["rdlm"]
 
 [tool.ruff.format]
 quote-style = "double"

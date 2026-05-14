@@ -1,1 +1,1 @@
-# tr-dllm — Tiny Recursive Diffusion Large Learning Model
+# rdlm — Recursive Diffusion Language Model
