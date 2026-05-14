@@ -23,12 +23,11 @@ Reference:
   - dLLM: Simple Diffusion Language Modeling (https://arxiv.org/abs/2602.22661)
 """
 
-import torch
-from torch import nn, Tensor
-import torch.nn.functional as F
 import math
-import numpy as np
-from typing import Callable
+
+import torch
+import torch.nn.functional as functional
+from torch import Tensor, nn
 
 
 class NoiseSchedule:
@@ -65,7 +64,7 @@ class NoiseSchedule:
         Returns:
             (batch, steps) — number of tokens to reveal at each step
         """
-        batch, seq_len = mask_index.shape
+        batch, _seq_len = mask_index.shape
         num_masks = mask_index.sum(dim=-1)  # (batch,)
 
         # Cosine schedule for unmasking
@@ -123,12 +122,18 @@ class RecursiveDiffusionLM(nn.Module):
 
     # ── Forward diffusion process ────────────────────────────────────
 
-    def _apply_mask(self, x0: Tensor, t: Tensor) -> tuple[Tensor, Tensor]:
+    def _apply_mask(
+        self,
+        x0: Tensor,
+        t: Tensor,
+        eligible_mask: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
         """Apply masking noise to clean sequences.
 
         Args:
             x0: (batch, seq_len) — clean token IDs
             t: (batch,) — timesteps in [0, 1]
+            eligible_mask: (batch, seq_len) — True where tokens may be masked
         Returns:
             x_t: (batch, seq_len) — masked sequences
             mask: (batch, seq_len) — True = masked position
@@ -144,6 +149,13 @@ class RecursiveDiffusionLM(nn.Module):
         # Sample mask decisions
         random_mask = torch.rand(batch, seq_len, device=device)
         is_masked = random_mask < mask_prob  # (batch, seq_len)
+        if eligible_mask is not None:
+            eligible_mask = eligible_mask.bool()
+            is_masked = is_masked & eligible_mask
+            for row in range(batch):
+                if eligible_mask[row].any() and not is_masked[row].any():
+                    first_eligible = torch.nonzero(eligible_mask[row], as_tuple=False)[0, 0]
+                    is_masked[row, first_eligible] = True
 
         # Apply mask: replace masked positions with mask_token_id
         x_t = torch.where(is_masked, torch.full_like(x0, self.mask_token_id), x0)
@@ -152,23 +164,30 @@ class RecursiveDiffusionLM(nn.Module):
 
     # ── Training step ────────────────────────────────────────────────
 
-    def forward(self, x0: Tensor, padding_mask: Tensor | None = None) -> dict:
+    def forward(
+        self,
+        x0: Tensor,
+        padding_mask: Tensor | None = None,
+        loss_mask: Tensor | None = None,
+    ) -> dict:
         """Training step: mask, predict, compute loss.
 
         Args:
             x0: (batch, seq_len) — clean token sequences
             padding_mask: (batch, seq_len) — 1 = valid, 0 = padding
+            loss_mask: (batch, seq_len) — 1 = positions eligible for masking/loss
         Returns:
             dict with loss, token_loss, logits, and diagnostics
         """
-        batch, seq_len = x0.shape
+        batch, _seq_len = x0.shape
         device = x0.device
 
         # 1. Sample timesteps
         t = self.noise_schedule.sample_t(batch, device=device)  # (batch,)
 
         # 2. Apply masking
-        x_t, is_masked = self._apply_mask(x0, t)  # x_t: (batch, seq_len)
+        eligible_mask = loss_mask.bool() if loss_mask is not None else None
+        x_t, is_masked = self._apply_mask(x0, t, eligible_mask=eligible_mask)
 
         # 3. Forward pass through backbone with timestep conditioning
         out = self.backbone(
@@ -181,18 +200,17 @@ class RecursiveDiffusionLM(nn.Module):
 
         # 4. Compute diffusion loss: only on masked positions
         logits = out["logits"]  # (batch, seq_len, vocab)
-        loss_all = F.cross_entropy(
+        loss_all = functional.cross_entropy(
             logits.permute(0, 2, 1),  # (batch, vocab, seq_len)
             x0,
             reduction="none",
         )  # (batch, seq_len)
 
         # Only compute loss at masked positions
-        if padding_mask is not None:
-            # Don't count padding tokens
-            effective_mask = is_masked & padding_mask.bool()
-        else:
-            effective_mask = is_masked
+        # Don't count padding tokens.
+        effective_mask = is_masked & padding_mask.bool() if padding_mask is not None else is_masked
+        if loss_mask is not None:
+            effective_mask = effective_mask & loss_mask.bool()
 
         n_masked = effective_mask.sum()
         if n_masked > 0:
@@ -323,7 +341,7 @@ class RecursiveDiffusionLM(nn.Module):
                 x0_pred = logits.argmax(dim=-1)  # (batch, seq_len)
 
                 # ---- Compute confidence for each prediction ----
-                probs = F.softmax(logits, dim=-1)
+                probs = functional.softmax(logits, dim=-1)
                 confidence = torch.gather(
                     probs, dim=-1, index=x0_pred.unsqueeze(-1)
                 ).squeeze(-1)  # (batch, seq_len)
@@ -348,7 +366,7 @@ class RecursiveDiffusionLM(nn.Module):
                     k = int(n_to_reveal[b].item())
                     if k > 0:
                         # Get the k highest confidence scores for this sample
-                        vals, idxs = torch.topk(select_confidence[b], k=k)
+                        _vals, idxs = torch.topk(select_confidence[b], k=k)
                         transfer[b, idxs] = True
 
                 # Reveal: put the predicted tokens in the selected positions
@@ -421,7 +439,10 @@ if __name__ == "__main__":
     batch, seq_len = 4, 16
     x0 = torch.randint(0, 98, (batch, seq_len))  # random clean tokens
     out = diff_lm(x0)
-    print(f"Training step: loss={out['loss'].item():.4f}, masked_ratio={out['masked_ratio'].item():.3f}")
+    print(
+        f"Training step: loss={out['loss'].item():.4f}, "
+        f"masked_ratio={out['masked_ratio'].item():.3f}"
+    )
 
     # Test generation
     prompt = torch.randint(0, 98, (1, 4))
