@@ -1,3 +1,4 @@
+import argparse
 import json
 import tempfile
 import types
@@ -25,7 +26,9 @@ from rdlm.diffusion_lm import RecursiveDiffusionLM
 from rdlm.train_arc import (
     create_model,
     evaluate_structured,
+    load_model_checkpoint,
     propose_mixed_shape_candidates,
+    save_checkpoint,
     score_structured_candidate,
     structured_forward_kwargs,
     structured_prediction_metrics,
@@ -259,6 +262,25 @@ class ArcTrainingSmokeTests(unittest.TestCase):
         self.assertEqual(out["shape_width_logits"].shape, (1, 30))
         self.assertIsNotNone(model.shape_height_head.weight.grad)
         self.assertIsNotNone(model.shape_width_head.weight.grad)
+
+    def test_checkpoint_load_allows_path_args_from_repo_checkpoints(self):
+        model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_path = Path(tmp) / "checkpoints" / "latest.pt"
+            args = argparse.Namespace(
+                checkpoint_dir=Path(tmp) / "checkpoints",
+                resume=Path(tmp) / "resume.pt",
+            )
+            save_checkpoint(checkpoint_path, model, optimizer, scheduler, 0, args)
+
+            reloaded = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+            load_model_checkpoint(checkpoint_path, reloaded, "cpu")
+
+        for key, value in model.state_dict().items():
+            self.assertTrue(torch.equal(value, reloaded.state_dict()[key]))
 
     def test_structured_prediction_metrics_capture_partial_errors(self):
         generated = torch.tensor([[1, 2, 0, 0]])

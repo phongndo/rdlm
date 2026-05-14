@@ -6,10 +6,11 @@ import argparse
 import json
 import random
 import time
-from pathlib import Path
+from pathlib import Path, PosixPath
 from typing import Any, TypedDict
 
 import torch
+from torch.serialization import safe_globals
 from torch.utils.data import DataLoader
 
 from rdlm.arc import (
@@ -142,7 +143,7 @@ def save_checkpoint(
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "step": step,
-            "args": vars(args),
+            "args": _jsonable_args(args),
         },
         path,
     )
@@ -155,7 +156,8 @@ def load_checkpoint(
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     device: str,
 ) -> int:
-    checkpoint = torch.load(path, map_location=device)
+    with safe_globals([PosixPath]):
+        checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     scheduler.load_state_dict(checkpoint["scheduler"])
@@ -163,7 +165,8 @@ def load_checkpoint(
 
 
 def load_model_checkpoint(path: Path, model: ArchitectureModel, device: str) -> None:
-    checkpoint = torch.load(path, map_location=device)
+    with safe_globals([PosixPath]):
+        checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint["model"])
 
 
