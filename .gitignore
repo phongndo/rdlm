@@ -16,6 +16,7 @@ uv.lock
 *.bin
 *.safetensors
 checkpoints/
+artifacts/
 
 # Experiment tracking
 wandb/
