@@ -274,6 +274,84 @@ class ArcOutputDiffusion(nn.Module):
         }
 
     @torch.no_grad()
+    def _sample_with_scores(
+        self,
+        context_colors: Tensor,
+        context_rows: Tensor,
+        context_cols: Tensor,
+        context_roles: Tensor,
+        context_examples: Tensor,
+        context_mask: Tensor,
+        target_rows: Tensor,
+        target_cols: Tensor,
+        target_mask: Tensor,
+        steps: int = 64,
+        temperature_start: float = 0.0,
+        temperature_end: float = 0.0,
+    ) -> tuple[Tensor, Tensor]:
+        batch, target_len = target_rows.shape
+        current = torch.full(
+            (batch, target_len),
+            MASK_COLOR_ID - 1,
+            dtype=torch.long,
+            device=self.device,
+        )
+        token_log_probs = torch.zeros((batch, target_len), dtype=torch.float, device=self.device)
+        revealed = torch.zeros((batch, target_len), dtype=torch.bool, device=self.device)
+        transfer_schedule = self.noise_schedule.get_num_transfer_tokens(target_mask.bool(), steps)
+
+        context_inputs = self.encoder(
+            context_colors,
+            context_rows,
+            context_cols,
+            context_roles,
+            context_examples,
+        )
+        for step_idx in range(transfer_schedule.shape[1]):
+            if transfer_schedule.shape[1] <= 1:
+                temperature = temperature_end
+            else:
+                progress = step_idx / (transfer_schedule.shape[1] - 1)
+                temperature = temperature_start + (temperature_end - temperature_start) * progress
+            remaining = (target_mask.bool() & ~revealed).float().sum(dim=-1)
+            total = target_mask.float().sum(dim=-1).clamp(min=1)
+            t = (remaining / total).clamp(min=0.01, max=0.99)
+            target_inputs = self._target_inputs(current, target_rows, target_cols, t)
+            inputs = torch.cat([context_inputs, target_inputs], dim=1)
+            attention_mask = torch.cat([context_mask, target_mask], dim=1)
+            outputs = self._refine(inputs, attention_mask)
+            logits = self.to_logits(outputs[:, context_inputs.shape[1] :])
+            clean_log_probs = functional.log_softmax(logits, dim=-1)
+            if temperature > 0:
+                sample_probs = functional.softmax(logits / temperature, dim=-1)
+                preds = torch.multinomial(
+                    sample_probs.reshape(-1, NUM_OUTPUT_COLORS),
+                    num_samples=1,
+                ).reshape(batch, target_len)
+            else:
+                preds = logits.argmax(dim=-1)
+            clean_pred_log_probs = torch.gather(
+                clean_log_probs,
+                -1,
+                preds.unsqueeze(-1),
+            ).squeeze(-1)
+            confidence = clean_pred_log_probs.exp()
+            confidence = confidence.masked_fill(~target_mask.bool() | revealed, -float("inf"))
+            transfer = torch.zeros_like(revealed)
+            for row in range(batch):
+                k = int(transfer_schedule[row, step_idx].item())
+                if k > 0:
+                    _vals, idxs = torch.topk(confidence[row], k=min(k, target_len))
+                    transfer[row, idxs] = True
+            current = torch.where(transfer, preds, current)
+            token_log_probs = torch.where(transfer, clean_pred_log_probs, token_log_probs)
+            revealed = revealed | transfer
+        return (
+            torch.where(target_mask.bool(), current, torch.zeros_like(current)),
+            torch.where(target_mask.bool(), token_log_probs, torch.zeros_like(token_log_probs)),
+        )
+
+    @torch.no_grad()
     def sample(
         self,
         context_colors: Tensor,
@@ -287,42 +365,86 @@ class ArcOutputDiffusion(nn.Module):
         target_mask: Tensor,
         steps: int = 64,
     ) -> Tensor:
-        batch, target_len = target_rows.shape
-        current = torch.full(
-            (batch, target_len),
-            MASK_COLOR_ID - 1,
-            dtype=torch.long,
-            device=self.device,
+        samples, _scores = self._sample_with_scores(
+            context_colors=context_colors,
+            context_rows=context_rows,
+            context_cols=context_cols,
+            context_roles=context_roles,
+            context_examples=context_examples,
+            context_mask=context_mask,
+            target_rows=target_rows,
+            target_cols=target_cols,
+            target_mask=target_mask,
+            steps=steps,
         )
-        revealed = torch.zeros((batch, target_len), dtype=torch.bool, device=self.device)
-        transfer_schedule = self.noise_schedule.get_num_transfer_tokens(target_mask.bool(), steps)
+        return samples
 
-        context_inputs = self.encoder(
-            context_colors,
-            context_rows,
-            context_cols,
-            context_roles,
-            context_examples,
-        )
-        for step_idx in range(transfer_schedule.shape[1]):
-            remaining = (target_mask.bool() & ~revealed).float().sum(dim=-1)
-            total = target_mask.float().sum(dim=-1).clamp(min=1)
-            t = (remaining / total).clamp(min=0.01, max=0.99)
-            target_inputs = self._target_inputs(current, target_rows, target_cols, t)
-            inputs = torch.cat([context_inputs, target_inputs], dim=1)
-            attention_mask = torch.cat([context_mask, target_mask], dim=1)
-            outputs = self._refine(inputs, attention_mask)
-            logits = self.to_logits(outputs[:, context_inputs.shape[1] :])
-            preds = logits.argmax(dim=-1)
-            probs = functional.softmax(logits, dim=-1)
-            confidence = torch.gather(probs, -1, preds.unsqueeze(-1)).squeeze(-1)
-            confidence = confidence.masked_fill(~target_mask.bool() | revealed, -float("inf"))
-            transfer = torch.zeros_like(revealed)
-            for row in range(batch):
-                k = int(transfer_schedule[row, step_idx].item())
-                if k > 0:
-                    _vals, idxs = torch.topk(confidence[row], k=min(k, target_len))
-                    transfer[row, idxs] = True
-            current = torch.where(transfer, preds, current)
-            revealed = revealed | transfer
-        return torch.where(target_mask.bool(), current, torch.zeros_like(current))
+    @torch.no_grad()
+    def sample_ensemble(
+        self,
+        context_colors: Tensor,
+        context_rows: Tensor,
+        context_cols: Tensor,
+        context_roles: Tensor,
+        context_examples: Tensor,
+        context_mask: Tensor,
+        target_rows: Tensor,
+        target_cols: Tensor,
+        target_mask: Tensor,
+        steps: int = 64,
+        num_candidates: int = 8,
+        temperature_start: float = 1.0,
+        temperature_end: float = 0.1,
+        strategy: str = "confidence",
+    ) -> Tensor:
+        if num_candidates < 1:
+            raise ValueError("num_candidates must be at least 1")
+        if temperature_start < 0 or temperature_end < 0:
+            raise ValueError("temperatures must be non-negative")
+        if strategy not in {"confidence", "majority"}:
+            raise ValueError("strategy must be 'confidence' or 'majority'")
+
+        samples: list[Tensor] = []
+        log_probs: list[Tensor] = []
+        for _ in range(num_candidates):
+            sample, scores = self._sample_with_scores(
+                context_colors=context_colors,
+                context_rows=context_rows,
+                context_cols=context_cols,
+                context_roles=context_roles,
+                context_examples=context_examples,
+                context_mask=context_mask,
+                target_rows=target_rows,
+                target_cols=target_cols,
+                target_mask=target_mask,
+                steps=steps,
+                temperature_start=temperature_start,
+                temperature_end=temperature_end,
+            )
+            samples.append(sample)
+            log_probs.append(scores)
+
+        sample_stack = torch.stack(samples, dim=0)
+        log_prob_stack = torch.stack(log_probs, dim=0)
+        target_mask_bool = target_mask.bool()
+
+        if strategy == "confidence":
+            denom = target_mask.float().sum(dim=-1).clamp(min=1)
+            candidate_scores = (log_prob_stack * target_mask_bool.unsqueeze(0)).sum(dim=-1) / denom
+            best_idx = candidate_scores.argmax(dim=0)
+            batch_idx = torch.arange(target_rows.shape[0], device=self.device)
+            best = sample_stack[best_idx, batch_idx]
+            return torch.where(target_mask_bool, best, torch.zeros_like(best))
+
+        vote_counts = []
+        vote_scores = []
+        for color in range(NUM_OUTPUT_COLORS):
+            color_matches = sample_stack == color
+            vote_counts.append(color_matches.sum(dim=0))
+            vote_scores.append(torch.where(color_matches, log_prob_stack, 0.0).sum(dim=0))
+        counts = torch.stack(vote_counts, dim=-1)
+        scores = torch.stack(vote_scores, dim=-1)
+        max_counts = counts.max(dim=-1, keepdim=True).values
+        tied_scores = scores.masked_fill(counts != max_counts, -float("inf"))
+        voted = tied_scores.argmax(dim=-1)
+        return torch.where(target_mask_bool, voted, torch.zeros_like(voted))

@@ -1,5 +1,6 @@
 import json
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -252,6 +253,125 @@ class ArcTrainingSmokeTests(unittest.TestCase):
 
         self.assertTrue(torch.isfinite(out["loss"]))
         self.assertTrue(torch.isfinite(out["aux_loss"]))
+
+    def test_structured_ensemble_single_candidate_matches_greedy(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[0]])
+        model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+
+        torch.manual_seed(11)
+        greedy = model.sample(
+            context_colors=batch["context_colors"],
+            context_rows=batch["context_rows"],
+            context_cols=batch["context_cols"],
+            context_roles=batch["context_roles"],
+            context_examples=batch["context_examples"],
+            context_mask=batch["context_mask"],
+            target_rows=batch["target_rows"],
+            target_cols=batch["target_cols"],
+            target_mask=batch["target_mask"],
+            steps=4,
+        )
+        torch.manual_seed(11)
+        ensemble = model.sample_ensemble(
+            context_colors=batch["context_colors"],
+            context_rows=batch["context_rows"],
+            context_cols=batch["context_cols"],
+            context_roles=batch["context_roles"],
+            context_examples=batch["context_examples"],
+            context_mask=batch["context_mask"],
+            target_rows=batch["target_rows"],
+            target_cols=batch["target_cols"],
+            target_mask=batch["target_mask"],
+            steps=4,
+            num_candidates=1,
+            temperature_start=0.0,
+            temperature_end=0.0,
+        )
+
+        self.assertTrue(torch.equal(ensemble, greedy))
+
+    def test_structured_ensemble_preserves_target_mask(self):
+        model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+        zeros = torch.zeros((1, 1), dtype=torch.long)
+        target_rows = torch.tensor([[0, 0]], dtype=torch.long)
+        target_cols = torch.tensor([[0, 1]], dtype=torch.long)
+        target_mask = torch.tensor([[True, False]])
+
+        def fake_sample_with_scores(self, **kwargs):
+            return (
+                torch.tensor([[7, 8]], dtype=torch.long),
+                torch.tensor([[-0.2, -0.1]], dtype=torch.float),
+            )
+
+        model._sample_with_scores = types.MethodType(fake_sample_with_scores, model)
+        generated = model.sample_ensemble(
+            context_colors=zeros,
+            context_rows=zeros,
+            context_cols=zeros,
+            context_roles=zeros,
+            context_examples=zeros,
+            context_mask=torch.ones((1, 1), dtype=torch.bool),
+            target_rows=target_rows,
+            target_cols=target_cols,
+            target_mask=target_mask,
+            num_candidates=1,
+        )
+
+        self.assertEqual(generated.tolist(), [[7, 0]])
+
+    def test_structured_majority_tie_uses_log_prob_then_lowest_color(self):
+        model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+        zeros = torch.zeros((1, 1), dtype=torch.long)
+        target_mask = torch.ones((1, 1), dtype=torch.bool)
+        candidates = iter([
+            (torch.tensor([[3]]), torch.tensor([[-0.4]])),
+            (torch.tensor([[4]]), torch.tensor([[-0.2]])),
+            (torch.tensor([[3]]), torch.tensor([[-0.6]])),
+            (torch.tensor([[4]]), torch.tensor([[-0.9]])),
+        ])
+
+        def fake_sample_with_scores(self, **kwargs):
+            return next(candidates)
+
+        model._sample_with_scores = types.MethodType(fake_sample_with_scores, model)
+        generated = model.sample_ensemble(
+            context_colors=zeros,
+            context_rows=zeros,
+            context_cols=zeros,
+            context_roles=zeros,
+            context_examples=zeros,
+            context_mask=torch.ones((1, 1), dtype=torch.bool),
+            target_rows=zeros,
+            target_cols=zeros,
+            target_mask=target_mask,
+            num_candidates=4,
+            strategy="majority",
+        )
+        self.assertEqual(generated.item(), 3)
+
+        candidates = iter([
+            (torch.tensor([[3]]), torch.tensor([[-0.5]])),
+            (torch.tensor([[4]]), torch.tensor([[-0.5]])),
+        ])
+        generated = model.sample_ensemble(
+            context_colors=zeros,
+            context_rows=zeros,
+            context_cols=zeros,
+            context_roles=zeros,
+            context_examples=zeros,
+            context_mask=torch.ones((1, 1), dtype=torch.bool),
+            target_rows=zeros,
+            target_cols=zeros,
+            target_mask=target_mask,
+            num_candidates=2,
+            strategy="majority",
+        )
+        self.assertEqual(generated.item(), 3)
 
 
 if __name__ == "__main__":

@@ -108,6 +108,11 @@ def load_checkpoint(
     return int(checkpoint["step"]) + 1
 
 
+def load_model_checkpoint(path: Path, model: ArchitectureModel, device: str) -> None:
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model"])
+
+
 @torch.no_grad()
 def evaluate(
     model: RecursiveDiffusionLM,
@@ -156,6 +161,11 @@ def evaluate_structured(
     device: str,
     limit: int,
     sample_steps: int,
+    inference_mode: str = "greedy",
+    num_candidates: int = 8,
+    temperature_start: float = 1.0,
+    temperature_end: float = 0.1,
+    ensemble_strategy: str = "confidence",
 ) -> dict[str, float]:
     model.eval()
     total = min(limit, len(dataset))
@@ -166,18 +176,28 @@ def evaluate_structured(
         moved = {
             key: value.to(device) for key, value in batch.items() if isinstance(value, torch.Tensor)
         }
-        generated = model.sample(
-            context_colors=moved["context_colors"],
-            context_rows=moved["context_rows"],
-            context_cols=moved["context_cols"],
-            context_roles=moved["context_roles"],
-            context_examples=moved["context_examples"],
-            context_mask=moved["context_mask"],
-            target_rows=moved["target_rows"],
-            target_cols=moved["target_cols"],
-            target_mask=moved["target_mask"],
-            steps=sample_steps,
-        )
+        sample_kwargs = {
+            "context_colors": moved["context_colors"],
+            "context_rows": moved["context_rows"],
+            "context_cols": moved["context_cols"],
+            "context_roles": moved["context_roles"],
+            "context_examples": moved["context_examples"],
+            "context_mask": moved["context_mask"],
+            "target_rows": moved["target_rows"],
+            "target_cols": moved["target_cols"],
+            "target_mask": moved["target_mask"],
+            "steps": sample_steps,
+        }
+        if inference_mode == "greedy":
+            generated = model.sample(**sample_kwargs)
+        else:
+            generated = model.sample_ensemble(
+                **sample_kwargs,
+                num_candidates=num_candidates,
+                temperature_start=temperature_start,
+                temperature_end=temperature_end,
+                strategy=ensemble_strategy,
+            )
         expected = moved["target_colors"]
         target_mask = moved["target_mask"].bool()
         if torch.equal(generated[target_mask].cpu(), expected[target_mask].cpu()):
@@ -204,19 +224,23 @@ def build_serialized_dataset(args: argparse.Namespace) -> tuple[ArcDataset, ArcD
 
 def build_structured_dataset(
     args: argparse.Namespace,
-) -> tuple[ArcStructuredDataset, ArcStructuredDataset | None]:
-    train_files = find_arc_json_files(args.train_dir or args.data_dir)
+) -> tuple[ArcStructuredDataset | None, ArcStructuredDataset | None]:
+    train_files = [] if args.eval_only else find_arc_json_files(args.train_dir or args.data_dir)
     if not train_files:
-        raise FileNotFoundError("no ARC train JSON files found")
-    train_dataset = ArcStructuredDataset(
-        train_files,
-        max_grid_size=args.max_grid_size,
-        max_examples=args.max_examples,
-        augment_color_permutation=args.augment_color_permutation,
-        augment_translation=args.augment_translation,
-        augment_grid_noise=args.augment_grid_noise,
-        curriculum=args.curriculum,
-    )
+        if args.eval_only:
+            train_dataset = None
+        else:
+            raise FileNotFoundError("no ARC train JSON files found")
+    else:
+        train_dataset = ArcStructuredDataset(
+            train_files,
+            max_grid_size=args.max_grid_size,
+            max_examples=args.max_examples,
+            augment_color_permutation=args.augment_color_permutation,
+            augment_translation=args.augment_translation,
+            augment_grid_noise=args.augment_grid_noise,
+            curriculum=args.curriculum,
+        )
 
     eval_dataset = None
     eval_files = find_arc_json_files(args.eval_dir)
@@ -294,6 +318,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=1000)
     parser.add_argument("--eval-limit", type=int, default=50)
     parser.add_argument("--sample-steps", type=int, default=64)
+    parser.add_argument("--eval-only", action="store_true")
+    parser.add_argument(
+        "--inference-mode",
+        choices=["greedy", "ensemble"],
+        default="greedy",
+        help="Inference mode for structured eval.",
+    )
+    parser.add_argument("--num-candidates", type=int, default=8)
+    parser.add_argument("--temperature-start", type=float, default=1.0)
+    parser.add_argument("--temperature-end", type=float, default=0.1)
+    parser.add_argument(
+        "--ensemble-strategy",
+        choices=["confidence", "majority"],
+        default="confidence",
+    )
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/arc"))
     parser.add_argument("--resume", type=Path, default=None)
@@ -335,6 +374,29 @@ def train_serialized(args: argparse.Namespace, device: str) -> None:
 
 def train_structured(args: argparse.Namespace, device: str) -> None:
     train_dataset, eval_dataset = build_structured_dataset(args)
+    model = create_structured_model(args).to(device)
+    if args.eval_only:
+        if eval_dataset is None:
+            raise SystemExit("provide --eval-dir with ARC JSON files for --eval-only")
+        if args.resume is None:
+            raise SystemExit("provide --resume for --eval-only")
+        load_model_checkpoint(args.resume, model, device)
+        metrics = evaluate_structured(
+            model,
+            eval_dataset,
+            device,
+            args.eval_limit,
+            args.sample_steps,
+            inference_mode=args.inference_mode,
+            num_candidates=args.num_candidates,
+            temperature_start=args.temperature_start,
+            temperature_end=args.temperature_end,
+            ensemble_strategy=args.ensemble_strategy,
+        )
+        print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
+        return
+    if train_dataset is None:
+        raise FileNotFoundError("no ARC train JSON files found")
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -344,7 +406,6 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
         pin_memory=device == "cuda",
     )
     train_iter = iter(train_loader)
-    model = create_structured_model(args).to(device)
     run_training_loop(
         args,
         device,
@@ -428,7 +489,21 @@ def run_training_loop(
             )
 
         if eval_dataset is not None and step > 0 and step % args.eval_every == 0:
-            metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
+            if args.arch == "structured_encoder":
+                metrics = eval_fn(
+                    model,
+                    eval_dataset,
+                    device,
+                    args.eval_limit,
+                    args.sample_steps,
+                    inference_mode=args.inference_mode,
+                    num_candidates=args.num_candidates,
+                    temperature_start=args.temperature_start,
+                    temperature_end=args.temperature_end,
+                    ensemble_strategy=args.ensemble_strategy,
+                )
+            else:
+                metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
             print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
 
         if step > 0 and step % args.save_every == 0:
@@ -463,8 +538,10 @@ def run_training_loop(
 
 def main() -> None:
     args = parse_args()
-    if args.data_dir is None and args.train_dir is None:
+    if not args.eval_only and args.data_dir is None and args.train_dir is None:
         raise SystemExit("provide --data-dir or --train-dir")
+    if args.eval_only and args.arch != "structured_encoder":
+        raise SystemExit("--eval-only is currently supported only for --arch structured_encoder")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
