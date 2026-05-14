@@ -144,6 +144,7 @@ def save_checkpoint(
             "scheduler": scheduler.state_dict(),
             "step": step,
             "args": _jsonable_args(args),
+            "args": _jsonable_args(args),
         },
         path,
     )
@@ -156,8 +157,7 @@ def load_checkpoint(
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     device: str,
 ) -> int:
-    with safe_globals([PosixPath]):
-        checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     scheduler.load_state_dict(checkpoint["scheduler"])
@@ -165,8 +165,7 @@ def load_checkpoint(
 
 
 def load_model_checkpoint(path: Path, model: ArchitectureModel, device: str) -> None:
-    with safe_globals([PosixPath]):
-        checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
 
 

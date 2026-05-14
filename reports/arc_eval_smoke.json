@@ -1,0 +1,122 @@
+{
+  "examples": [
+    {
+      "cell_acc": 0.3888888888888889,
+      "color_hist_l1": 0.8888888888888888,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.3730798363685608,
+      "mean_token_log_prob": -1.0019508600234985,
+      "nonzero_iou": 1.0,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        6,
+        6
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        6,
+        6
+      ],
+      "task_id": "00576224",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.16666666666666666,
+      "color_hist_l1": 1.5,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.4222151041030884,
+      "mean_token_log_prob": -0.8824125528335571,
+      "nonzero_iou": 1.0,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        6,
+        6
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        6,
+        6
+      ],
+      "task_id": "00576224",
+      "width_acc": true
+    }
+  ],
+  "metadata": {
+    "architecture": "structured_encoder",
+    "args": {
+      "arch": "structured_encoder",
+      "augment_color_permutation": false,
+      "augment_grid_noise": false,
+      "augment_translation": false,
+      "aux_loss_weight": 0.0,
+      "batch_size": 8,
+      "checkpoint_dir": "checkpoints/arc",
+      "curriculum": false,
+      "data_dir": null,
+      "debug_dir": "reports/arc_debug_smoke",
+      "debug_limit": 1,
+      "device": "cuda",
+      "dim": 256,
+      "dump_candidates": false,
+      "ensemble_strategy": "confidence",
+      "eval_dir": "/home/joey/Programming/arc-agi/data/evaluation",
+      "eval_every": 1000,
+      "eval_limit": 2,
+      "eval_only": true,
+      "eval_report": "reports/arc_eval_smoke.json",
+      "gradient_checkpointing": true,
+      "infer_shape": false,
+      "inference_mode": "greedy",
+      "log_every": 100,
+      "lr": 0.0003,
+      "max_examples": 2,
+      "max_grid_size": 30,
+      "num_candidates": 8,
+      "num_workers": 0,
+      "resume": "checkpoints/arc_encoder/latest.pt",
+      "sample_steps": 64,
+      "save_every": 1000,
+      "seed": 7,
+      "seq_len": 1024,
+      "shape_loss_weight": 0.1,
+      "shape_score_weight": 0.25,
+      "shape_top_k": 5,
+      "steps": 20000,
+      "stochastic_depth_prob": 0.0,
+      "temperature_end": 0.1,
+      "temperature_start": 1.0,
+      "train_dir": null,
+      "use_object_features": false,
+      "use_shape_head": false
+    },
+    "checkpoint": "checkpoints/arc_encoder/latest.pt",
+    "dump_candidates": false,
+    "ensemble_strategy": "confidence",
+    "infer_shape": false,
+    "inference_mode": "greedy",
+    "num_candidates": 8,
+    "sample_steps": 64,
+    "shape_score_weight": 0.25,
+    "shape_top_k": 5,
+    "temperature_end": 0.1,
+    "temperature_start": 1.0
+  },
+  "summary": {
+    "cell_acc": 0.2777777777777778,
+    "color_hist_l1": 1.1944444444444444,
+    "exact": 0.0,
+    "height_acc": 1.0,
+    "mean_confidence": 0.3976474702358246,
+    "mean_token_log_prob": -0.9421817064285278,
+    "nonzero_iou": 1.0,
+    "oracle_shape_exact": 0.0,
+    "shape_exact": 1.0,
+    "shape_topk_hit": 1.0,
+    "valid": 1.0,
+    "width_acc": 1.0
+  }
+}
