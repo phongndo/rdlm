@@ -14,6 +14,8 @@ from torch.utils.data import DataLoader
 
 from rdlm.arc import (
     MASK_TOKEN_ID,
+    ROLE_DEMO_OUTPUT,
+    ROLE_QUERY_INPUT,
     VOCAB_SIZE,
     ArcDataset,
     ArcStructuredDataset,
@@ -23,7 +25,12 @@ from rdlm.arc import (
     find_arc_json_files,
     parse_grid,
 )
-from rdlm.arc_model import NUM_OUTPUT_COLORS, ArcOutputDiffusion
+from rdlm.arc_model import (
+    NUM_OUTPUT_COLORS,
+    ArcOutputDiffusion,
+    ShapeCandidate,
+    StructuredCandidate,
+)
 from rdlm.diffusion_lm import NoiseSchedule, RecursiveDiffusionLM
 from rdlm.trm import TinyRecursiveModel
 
@@ -52,6 +59,8 @@ STRUCTURED_FORWARD_KEYS = (
     "target_rows",
     "target_cols",
     "target_mask",
+    "target_heights",
+    "target_widths",
     "context_object_ids",
     "context_object_size_buckets",
     "context_object_heights",
@@ -59,7 +68,16 @@ STRUCTURED_FORWARD_KEYS = (
     "context_object_rel_rows",
     "context_object_rel_cols",
 )
-STRUCTURED_SAMPLE_KEYS = tuple(key for key in STRUCTURED_FORWARD_KEYS if key != "target_colors")
+STRUCTURED_SAMPLE_KEYS = tuple(
+    key
+    for key in STRUCTURED_FORWARD_KEYS
+    if key not in {"target_colors", "target_heights", "target_widths"}
+)
+STRUCTURED_CONTEXT_KEYS = tuple(
+    key
+    for key in STRUCTURED_SAMPLE_KEYS
+    if key not in {"target_rows", "target_cols", "target_mask"}
+)
 
 
 def choose_device(name: str) -> str:
@@ -104,6 +122,8 @@ def create_structured_model(args: argparse.Namespace) -> ArcOutputDiffusion:
         stochastic_depth_prob=args.stochastic_depth_prob,
         aux_loss_weight=args.aux_loss_weight,
         use_object_features=args.use_object_features,
+        use_shape_head=args.use_shape_head,
+        shape_loss_weight=args.shape_loss_weight,
     )
 
 
@@ -159,6 +179,15 @@ def structured_forward_kwargs(batch: dict[str, Any]) -> dict[str, torch.Tensor]:
 def structured_sample_kwargs(batch: dict[str, Any]) -> dict[str, torch.Tensor]:
     kwargs: dict[str, torch.Tensor] = {}
     for key in STRUCTURED_SAMPLE_KEYS:
+        value = batch.get(key)
+        if isinstance(value, torch.Tensor):
+            kwargs[key] = value
+    return kwargs
+
+
+def structured_context_kwargs(batch: dict[str, Any]) -> dict[str, torch.Tensor]:
+    kwargs: dict[str, torch.Tensor] = {}
+    for key in STRUCTURED_CONTEXT_KEYS:
         value = batch.get(key)
         if isinstance(value, torch.Tensor):
             kwargs[key] = value
@@ -234,25 +263,89 @@ def structured_prediction_metrics(
     }
 
 
+def structured_prediction_metrics_for_shapes(
+    generated: torch.Tensor,
+    expected: torch.Tensor,
+    generated_shape: tuple[int, int],
+    expected_shape: tuple[int, int],
+    token_log_probs: torch.Tensor,
+) -> PredictionMetrics:
+    generated_values = [int(value) for value in generated.detach().cpu().view(-1).tolist()]
+    expected_values = [int(value) for value in expected.detach().cpu().view(-1).tolist()]
+    generated_grid = _grid_from_values(generated_values, generated_shape)
+    expected_grid = _grid_from_values(expected_values, expected_shape)
+    expected_area = expected_shape[0] * expected_shape[1]
+    correct_count = 0
+    for row_idx in range(min(generated_shape[0], expected_shape[0])):
+        for col_idx in range(min(generated_shape[1], expected_shape[1])):
+            if generated_grid[row_idx][col_idx] == expected_grid[row_idx][col_idx]:
+                correct_count += 1
+
+    generated_nonzero = {
+        (row_idx, col_idx)
+        for row_idx, row in enumerate(generated_grid)
+        for col_idx, value in enumerate(row)
+        if value != 0
+    }
+    expected_nonzero = {
+        (row_idx, col_idx)
+        for row_idx, row in enumerate(expected_grid)
+        for col_idx, value in enumerate(row)
+        if value != 0
+    }
+    nonzero_union = generated_nonzero | expected_nonzero
+    generated_hist = torch.bincount(
+        torch.tensor(generated_values, dtype=torch.long),
+        minlength=NUM_OUTPUT_COLORS,
+    ).float()
+    expected_hist = torch.bincount(
+        torch.tensor(expected_values, dtype=torch.long),
+        minlength=NUM_OUTPUT_COLORS,
+    ).float()
+    flat_log_probs = token_log_probs.detach().cpu().float().view(-1)
+    return {
+        "exact": bool(generated_shape == expected_shape and generated_values == expected_values),
+        "cell_count": expected_area,
+        "correct_count": correct_count,
+        "cell_acc": correct_count / max(expected_area, 1),
+        "nonzero_iou": 1.0
+        if not nonzero_union
+        else len(generated_nonzero & expected_nonzero) / len(nonzero_union),
+        "color_hist_l1": float(
+            (generated_hist - expected_hist).abs().sum().item() / max(expected_area, 1)
+        ),
+        "mean_token_log_prob": float(flat_log_probs.mean().item())
+        if flat_log_probs.numel()
+        else 0.0,
+        "mean_confidence": float(flat_log_probs.exp().mean().item())
+        if flat_log_probs.numel()
+        else 0.0,
+    }
+
+
 def _structured_debug_payload(
     task_id: str,
-    shape: tuple[int, int],
+    expected_shape: tuple[int, int],
+    predicted_shape: tuple[int, int],
     expected: torch.Tensor,
     generated: torch.Tensor,
     token_log_probs: torch.Tensor,
     trace: dict[str, torch.Tensor] | None,
     metrics: PredictionMetrics,
+    candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     expected_values = [int(value) for value in expected.detach().cpu().view(-1).tolist()]
     generated_values = [int(value) for value in generated.detach().cpu().view(-1).tolist()]
     payload: dict[str, Any] = {
         "task_id": task_id,
-        "target_shape": list(shape),
+        "target_shape": list(expected_shape),
+        "predicted_shape": list(predicted_shape),
         "metrics": metrics,
-        "expected_grid": _grid_from_values(expected_values, shape),
-        "predicted_grid": _grid_from_values(generated_values, shape),
-        "token_log_prob_grid": _float_grid_from_tensor(token_log_probs.view(-1), shape),
-        "confidence_grid": _float_grid_from_tensor(token_log_probs.exp().view(-1), shape),
+        "expected_grid": _grid_from_values(expected_values, expected_shape),
+        "predicted_grid": _grid_from_values(generated_values, predicted_shape),
+        "token_log_prob_grid": _float_grid_from_tensor(token_log_probs.view(-1), predicted_shape),
+        "confidence_grid": _float_grid_from_tensor(token_log_probs.exp().view(-1), predicted_shape),
+        "candidates": candidates or [],
         "trajectory": [],
         "revealed_trajectory": [],
         "confidence_trajectory": [],
@@ -264,17 +357,128 @@ def _structured_debug_payload(
     revealed_history = trace["revealed_history"][0].detach().cpu()
     confidence_history = trace["confidence_history"][0].detach().cpu()
     payload["trajectory"] = [
-        _grid_from_values([int(value) for value in step.tolist()], shape, unknown_value=-1)
+        _grid_from_values(
+            [int(value) for value in step.tolist()], predicted_shape, unknown_value=-1
+        )
         for step in sample_history
     ]
     payload["revealed_trajectory"] = [
-        _grid_from_values([int(value) for value in step.tolist()], shape)
+        _grid_from_values([int(value) for value in step.tolist()], predicted_shape)
         for step in revealed_history.long()
     ]
     payload["confidence_trajectory"] = [
-        _float_grid_from_tensor(step.view(-1), shape) for step in confidence_history
+        _float_grid_from_tensor(step.view(-1), predicted_shape) for step in confidence_history
     ]
     return payload
+
+
+def _context_shape_priors(
+    batch: dict[str, torch.Tensor], max_grid_size: int
+) -> list[ShapeCandidate]:
+    roles = batch["context_roles"][0].detach().cpu()
+    examples = batch["context_examples"][0].detach().cpu()
+    rows = batch["context_rows"][0].detach().cpu()
+    cols = batch["context_cols"][0].detach().cpu()
+    mask = batch["context_mask"][0].detach().cpu().bool()
+    priors: list[ShapeCandidate] = []
+    seen_groups: set[tuple[int, int]] = set()
+    for role, source in (
+        (ROLE_QUERY_INPUT, "query_input"),
+        (ROLE_DEMO_OUTPUT, "demo_output"),
+    ):
+        group_ids = sorted(
+            {int(example_id) for example_id in examples[(roles == role) & mask].tolist()}
+        )
+        for group_id in group_ids:
+            group_mask = (roles == role) & (examples == group_id) & mask
+            if not group_mask.any():
+                continue
+            height = int(rows[group_mask].max().item()) + 1
+            width = int(cols[group_mask].max().item()) + 1
+            if not (1 <= height <= max_grid_size and 1 <= width <= max_grid_size):
+                continue
+            key = (height, width)
+            if key in seen_groups:
+                continue
+            seen_groups.add(key)
+            priors.append(
+                ShapeCandidate(
+                    height=height,
+                    width=width,
+                    log_prob=0.0,
+                    source=source,
+                )
+            )
+    return priors
+
+
+def _merge_shape_candidates(
+    candidates: list[ShapeCandidate],
+    limit: int,
+) -> list[ShapeCandidate]:
+    merged: dict[tuple[int, int], ShapeCandidate] = {}
+    for candidate in candidates:
+        key = (candidate.height, candidate.width)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = candidate
+            continue
+        sources = existing.source.split("+")
+        for source in candidate.source.split("+"):
+            if source not in sources:
+                sources.append(source)
+        merged[key] = ShapeCandidate(
+            height=candidate.height,
+            width=candidate.width,
+            log_prob=max(existing.log_prob, candidate.log_prob),
+            source="+".join(sources),
+        )
+    return list(merged.values())[:limit]
+
+
+def propose_mixed_shape_candidates(
+    model: ArcOutputDiffusion,
+    batch: dict[str, torch.Tensor],
+    top_k: int,
+) -> list[ShapeCandidate]:
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1")
+    priors = _context_shape_priors(batch, model.max_grid_size)
+    neural = model.predict_shapes(**structured_context_kwargs(batch), top_k=top_k)[0]
+    return _merge_shape_candidates([*priors, *neural], limit=top_k)
+
+
+def _candidate_prior_bonus(candidate: StructuredCandidate | ShapeCandidate) -> float:
+    sources = set(candidate.source.split("+"))
+    return 0.05 if sources & {"query_input", "demo_output"} else 0.0
+
+
+def score_structured_candidate(
+    candidate: StructuredCandidate,
+    shape_score_weight: float,
+) -> float:
+    return (
+        candidate.mean_token_log_prob
+        + shape_score_weight * candidate.shape_log_prob
+        + _candidate_prior_bonus(candidate)
+    )
+
+
+def _candidate_report_row(
+    candidate: StructuredCandidate,
+    shape_score_weight: float,
+) -> dict[str, Any]:
+    shape = (candidate.height, candidate.width)
+    values = [int(value) for value in candidate.sample.detach().cpu().view(-1).tolist()]
+    return {
+        "shape": [candidate.height, candidate.width],
+        "source": candidate.source,
+        "shape_log_prob": candidate.shape_log_prob,
+        "mean_token_log_prob": candidate.mean_token_log_prob,
+        "prior_bonus": _candidate_prior_bonus(candidate),
+        "score": score_structured_candidate(candidate, shape_score_weight),
+        "grid": _grid_from_values(values, shape),
+    }
 
 
 @torch.no_grad()
@@ -335,6 +539,10 @@ def evaluate_structured(
     debug_limit: int = 5,
     args: argparse.Namespace | None = None,
     checkpoint_path: Path | None = None,
+    infer_shape: bool = False,
+    shape_top_k: int = 5,
+    shape_score_weight: float = 0.25,
+    dump_candidates: bool = False,
 ) -> dict[str, float]:
     model.eval()
     total = min(limit, len(dataset))
@@ -345,6 +553,11 @@ def evaluate_structured(
     color_hist_l1_sum = 0.0
     token_log_prob_sum = 0.0
     confidence_sum = 0.0
+    shape_exact = 0
+    shape_topk_hit = 0
+    height_correct = 0
+    width_correct = 0
+    oracle_exact = 0
     examples: list[dict[str, Any]] = []
 
     for idx in range(total):
@@ -352,29 +565,117 @@ def evaluate_structured(
         moved = {
             key: value.to(device) for key, value in batch.items() if isinstance(value, torch.Tensor)
         }
-        sample_kwargs = structured_sample_kwargs(moved)
+        expected = moved["target_colors"]
+        target_mask = moved["target_mask"].bool()
+        expected_shape = batch["target_shapes"][0]
+        task_id = str(batch["task_ids"][0])
         trace = None
-        if inference_mode == "greedy":
-            trace = model.sample_with_trace(**sample_kwargs, steps=sample_steps)
-            generated = trace["samples"]
-            token_log_probs = trace["token_log_probs"]
-        else:
-            generated, token_log_probs = model._sample_ensemble_with_scores(
-                **sample_kwargs,
+
+        candidate_shape_set: set[tuple[int, int]] = {expected_shape}
+        candidate_rows: list[dict[str, Any]] = []
+        oracle_exact_for_example = False
+        if infer_shape:
+            oracle_sample_kwargs = structured_sample_kwargs(moved)
+            if inference_mode == "greedy":
+                oracle_generated, oracle_log_probs = model._sample_with_scores(
+                    **oracle_sample_kwargs,
+                    steps=sample_steps,
+                )
+            else:
+                oracle_generated, oracle_log_probs = model._sample_ensemble_with_scores(
+                    **oracle_sample_kwargs,
+                    steps=sample_steps,
+                    num_candidates=num_candidates,
+                    temperature_start=temperature_start,
+                    temperature_end=temperature_end,
+                    strategy=ensemble_strategy,
+                )
+            oracle_prediction_metrics = structured_prediction_metrics(
+                oracle_generated,
+                expected,
+                target_mask,
+                oracle_log_probs,
+            )
+            oracle_exact_for_example = bool(oracle_prediction_metrics["exact"])
+            shape_candidates = propose_mixed_shape_candidates(
+                model,
+                moved,
+                top_k=shape_top_k,
+            )
+            if not shape_candidates:
+                raise RuntimeError(f"no shape candidates generated for {task_id}")
+            candidate_shape_set = {
+                (candidate.height, candidate.width) for candidate in shape_candidates
+            }
+            structured_candidates = model.sample_candidates(
+                **structured_context_kwargs(moved),
+                candidate_shapes=shape_candidates,
                 steps=sample_steps,
+                inference_mode=inference_mode,
                 num_candidates=num_candidates,
                 temperature_start=temperature_start,
                 temperature_end=temperature_end,
-                strategy=ensemble_strategy,
+                ensemble_strategy=ensemble_strategy,
             )
-        expected = moved["target_colors"]
-        target_mask = moved["target_mask"].bool()
-        prediction_metrics = structured_prediction_metrics(
-            generated,
-            expected,
-            target_mask,
-            token_log_probs,
-        )
+            if not structured_candidates:
+                raise RuntimeError(f"no structured candidates generated for {task_id}")
+            selected = max(
+                structured_candidates,
+                key=lambda candidate: score_structured_candidate(
+                    candidate,
+                    shape_score_weight,
+                ),
+            )
+            predicted_shape = (selected.height, selected.width)
+            generated_values = selected.sample
+            generated_log_probs = selected.token_log_probs
+            prediction_metrics = structured_prediction_metrics_for_shapes(
+                generated_values,
+                expected[0],
+                predicted_shape,
+                expected_shape,
+                generated_log_probs,
+            )
+            if dump_candidates:
+                candidate_rows = [
+                    _candidate_report_row(candidate, shape_score_weight)
+                    for candidate in structured_candidates
+                ]
+        else:
+            sample_kwargs = structured_sample_kwargs(moved)
+            if inference_mode == "greedy":
+                trace = model.sample_with_trace(**sample_kwargs, steps=sample_steps)
+                generated = trace["samples"]
+                token_log_probs = trace["token_log_probs"]
+            else:
+                generated, token_log_probs = model._sample_ensemble_with_scores(
+                    **sample_kwargs,
+                    steps=sample_steps,
+                    num_candidates=num_candidates,
+                    temperature_start=temperature_start,
+                    temperature_end=temperature_end,
+                    strategy=ensemble_strategy,
+                )
+            predicted_shape = expected_shape
+            generated_values = generated[0]
+            generated_log_probs = token_log_probs[0]
+            prediction_metrics = structured_prediction_metrics(
+                generated,
+                expected,
+                target_mask,
+                token_log_probs,
+            )
+            oracle_exact_for_example = bool(prediction_metrics["exact"])
+
+        shape_match = predicted_shape == expected_shape
+        shape_topk_match = expected_shape in candidate_shape_set
+        height_match = predicted_shape[0] == expected_shape[0]
+        width_match = predicted_shape[1] == expected_shape[1]
+        shape_exact += int(shape_match)
+        shape_topk_hit += int(shape_topk_match)
+        height_correct += int(height_match)
+        width_correct += int(width_match)
+        oracle_exact += int(oracle_exact_for_example)
         if prediction_metrics["exact"]:
             exact += 1
         cell_count = int(prediction_metrics["cell_count"])
@@ -385,28 +686,36 @@ def evaluate_structured(
         token_log_prob_sum += float(prediction_metrics["mean_token_log_prob"]) * cell_count
         confidence_sum += float(prediction_metrics["mean_confidence"]) * cell_count
 
-        shape = batch["target_shapes"][0]
-        task_id = str(batch["task_ids"][0])
         example_row = {
             "task_id": task_id,
-            "target_shape": list(shape),
+            "target_shape": list(expected_shape),
+            "predicted_shape": list(predicted_shape),
             "exact": prediction_metrics["exact"],
+            "shape_exact": shape_match,
+            "shape_topk_hit": shape_topk_match,
+            "height_acc": height_match,
+            "width_acc": width_match,
+            "oracle_shape_exact": oracle_exact_for_example,
             "cell_acc": prediction_metrics["cell_acc"],
             "nonzero_iou": prediction_metrics["nonzero_iou"],
             "color_hist_l1": prediction_metrics["color_hist_l1"],
             "mean_token_log_prob": prediction_metrics["mean_token_log_prob"],
             "mean_confidence": prediction_metrics["mean_confidence"],
         }
+        if dump_candidates:
+            example_row["candidates"] = candidate_rows
         examples.append(example_row)
         if debug_dir is not None and idx < debug_limit:
             debug_payload = _structured_debug_payload(
                 task_id=task_id,
-                shape=shape,
+                expected_shape=expected_shape,
+                predicted_shape=predicted_shape,
                 expected=expected[0],
-                generated=generated[0],
-                token_log_probs=token_log_probs[0],
+                generated=generated_values,
+                token_log_probs=generated_log_probs,
                 trace=trace,
                 metrics=prediction_metrics,
+                candidates=candidate_rows if dump_candidates else None,
             )
             _write_json(debug_dir / f"{idx:04d}_{task_id}.json", debug_payload)
 
@@ -420,6 +729,11 @@ def evaluate_structured(
             "color_hist_l1": 0.0,
             "mean_token_log_prob": 0.0,
             "mean_confidence": 0.0,
+            "shape_exact": 0.0,
+            "shape_topk_hit": 0.0,
+            "height_acc": 0.0,
+            "width_acc": 0.0,
+            "oracle_shape_exact": 0.0,
         }
     else:
         summary = {
@@ -430,6 +744,11 @@ def evaluate_structured(
             "color_hist_l1": color_hist_l1_sum / total,
             "mean_token_log_prob": token_log_prob_sum / max(total_cells, 1),
             "mean_confidence": confidence_sum / max(total_cells, 1),
+            "shape_exact": shape_exact / total,
+            "shape_topk_hit": shape_topk_hit / total,
+            "height_acc": height_correct / total,
+            "width_acc": width_correct / total,
+            "oracle_shape_exact": oracle_exact / total,
         }
     if eval_report is not None:
         _write_json(
@@ -446,6 +765,10 @@ def evaluate_structured(
                     "temperature_start": temperature_start,
                     "temperature_end": temperature_end,
                     "ensemble_strategy": ensemble_strategy,
+                    "infer_shape": infer_shape,
+                    "shape_top_k": shape_top_k,
+                    "shape_score_weight": shape_score_weight,
+                    "dump_candidates": dump_candidates,
                     "args": _jsonable_args(args),
                 },
             },
@@ -540,6 +863,17 @@ def parse_args() -> argparse.Namespace:
         help="Condition the structured encoder on connected-component object metadata.",
     )
     parser.add_argument(
+        "--use-shape-head",
+        action="store_true",
+        help="Train a context-pooled height/width head for inferred-shape evaluation.",
+    )
+    parser.add_argument(
+        "--shape-loss-weight",
+        type=float,
+        default=0.1,
+        help="Weight applied to the auxiliary height/width loss when --use-shape-head is set.",
+    )
+    parser.add_argument(
         "--augment-color-permutation",
         action="store_true",
         help="Add a consistent color-permuted copy of each structured ARC task.",
@@ -584,6 +918,28 @@ def parse_args() -> argparse.Namespace:
         "--ensemble-strategy",
         choices=["confidence", "majority"],
         default="confidence",
+    )
+    parser.add_argument(
+        "--infer-shape",
+        action="store_true",
+        help="Evaluate by proposing output shapes from context instead of using the target shape.",
+    )
+    parser.add_argument(
+        "--shape-top-k",
+        type=int,
+        default=5,
+        help="Number of mixed shape candidates to sample when --infer-shape is set.",
+    )
+    parser.add_argument(
+        "--shape-score-weight",
+        type=float,
+        default=0.25,
+        help="Weight for the shape log-probability term when ranking inferred-shape candidates.",
+    )
+    parser.add_argument(
+        "--dump-candidates",
+        action="store_true",
+        help="Include sampled inferred-shape candidates in eval reports and debug JSON.",
     )
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/arc"))
@@ -649,10 +1005,14 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
             debug_limit=args.debug_limit,
             args=args,
             checkpoint_path=args.resume,
+            infer_shape=args.infer_shape,
+            shape_top_k=args.shape_top_k,
+            shape_score_weight=args.shape_score_weight,
+            dump_candidates=args.dump_candidates,
         )
         print(
             f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
-            f"cell_acc={metrics['cell_acc']:.3%}"
+            f"cell_acc={metrics['cell_acc']:.3%} shape_exact={metrics['shape_exact']:.3%}"
         )
         return
     if train_dataset is None:
@@ -755,13 +1115,17 @@ def run_training_loop(
                     debug_limit=args.debug_limit,
                     args=args,
                     checkpoint_path=args.resume,
+                    infer_shape=args.infer_shape,
+                    shape_top_k=args.shape_top_k,
+                    shape_score_weight=args.shape_score_weight,
+                    dump_candidates=args.dump_candidates,
                 )
             else:
                 metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
             if args.arch == "structured_encoder":
                 print(
                     f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
-                    f"cell_acc={metrics['cell_acc']:.3%}"
+                    f"cell_acc={metrics['cell_acc']:.3%} shape_exact={metrics['shape_exact']:.3%}"
                 )
             else:
                 print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
@@ -802,6 +1166,10 @@ def main() -> None:
         raise SystemExit("provide --data-dir or --train-dir")
     if args.eval_only and args.arch != "structured_encoder":
         raise SystemExit("--eval-only is currently supported only for --arch structured_encoder")
+    if args.shape_top_k < 1:
+        raise SystemExit("--shape-top-k must be at least 1")
+    if args.shape_score_weight < 0.0:
+        raise SystemExit("--shape-score-weight must be non-negative")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)

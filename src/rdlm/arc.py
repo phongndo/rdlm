@@ -689,6 +689,8 @@ def collate_structured_arc_examples(
     target_rows = torch.zeros((batch_size, max_target), dtype=torch.long)
     target_cols = torch.zeros((batch_size, max_target), dtype=torch.long)
     target_mask = torch.zeros((batch_size, max_target), dtype=torch.bool)
+    target_heights = torch.zeros(batch_size, dtype=torch.long)
+    target_widths = torch.zeros(batch_size, dtype=torch.long)
     task_ids: list[str] = []
     target_shapes: list[tuple[int, int]] = []
 
@@ -732,6 +734,8 @@ def collate_structured_arc_examples(
         target_rows[row, :target_len] = torch.tensor(example.target_rows, dtype=torch.long)
         target_cols[row, :target_len] = torch.tensor(example.target_cols, dtype=torch.long)
         target_mask[row, :target_len] = True
+        target_heights[row] = example.target_height
+        target_widths[row] = example.target_width
         task_ids.append(example.task_id)
         target_shapes.append((example.target_height, example.target_width))
 
@@ -752,6 +756,8 @@ def collate_structured_arc_examples(
         "target_rows": target_rows,
         "target_cols": target_cols,
         "target_mask": target_mask,
+        "target_heights": target_heights,
+        "target_widths": target_widths,
         "task_ids": task_ids,
         "target_shapes": target_shapes,
     }

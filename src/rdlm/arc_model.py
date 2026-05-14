@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 import torch.nn.functional as functional
 from torch import Tensor, nn
@@ -14,6 +16,29 @@ PAD_COLOR_ID = 0
 MASK_COLOR_ID = 11
 NUM_COLOR_TOKENS = 12
 NUM_OUTPUT_COLORS = 10
+
+
+@dataclass(frozen=True)
+class ShapeCandidate:
+    """One proposed ARC output shape."""
+
+    height: int
+    width: int
+    log_prob: float
+    source: str
+
+
+@dataclass(frozen=True)
+class StructuredCandidate:
+    """One generated structured ARC output candidate."""
+
+    height: int
+    width: int
+    sample: Tensor
+    token_log_probs: Tensor
+    mean_token_log_prob: float
+    shape_log_prob: float
+    source: str
 
 
 class ArcStructuredEncoder(nn.Module):
@@ -104,13 +129,18 @@ class ArcOutputDiffusion(nn.Module):
         stochastic_depth_prob: float = 0.0,
         aux_loss_weight: float = 0.0,
         use_object_features: bool = False,
+        use_shape_head: bool = False,
+        shape_loss_weight: float = 0.1,
     ):
         super().__init__()
         if not 0.0 <= stochastic_depth_prob < 1.0:
             raise ValueError("stochastic_depth_prob must be in [0, 1)")
         if aux_loss_weight < 0.0:
             raise ValueError("aux_loss_weight must be non-negative")
+        if shape_loss_weight < 0.0:
+            raise ValueError("shape_loss_weight must be non-negative")
         self.dim = dim
+        self.max_grid_size = max_grid_size
         self.noise_schedule = noise_schedule or NoiseSchedule()
         self.encoder = ArcStructuredEncoder(
             dim=dim,
@@ -137,6 +167,11 @@ class ArcOutputDiffusion(nn.Module):
         self.stochastic_depth_prob = stochastic_depth_prob
         self.aux_loss_weight = aux_loss_weight
         self.use_object_features = use_object_features
+        self.use_shape_head = use_shape_head
+        self.shape_loss_weight = shape_loss_weight
+        if use_shape_head:
+            self.shape_height_head = nn.Linear(dim, max_grid_size)
+            self.shape_width_head = nn.Linear(dim, max_grid_size)
 
     @property
     def device(self) -> torch.device:
@@ -213,6 +248,32 @@ class ArcOutputDiffusion(nn.Module):
             object_rel_rows=context_object_rel_rows,
             object_rel_cols=context_object_rel_cols,
         )
+
+    def _pool_context(self, context_inputs: Tensor, context_mask: Tensor) -> Tensor:
+        mask = context_mask.bool().unsqueeze(-1)
+        denom = mask.float().sum(dim=1).clamp(min=1.0)
+        return (context_inputs * mask.float()).sum(dim=1) / denom
+
+    def _shape_logits_from_context(
+        self,
+        context_inputs: Tensor,
+        context_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        if not self.use_shape_head:
+            raise ValueError("shape head is disabled")
+        pooled = self._pool_context(context_inputs, context_mask)
+        return self.shape_height_head(pooled), self.shape_width_head(pooled)
+
+    @staticmethod
+    def _target_grid_tensors(
+        height: int,
+        width: int,
+        device: torch.device,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        rows = torch.arange(height, device=device).repeat_interleave(width).unsqueeze(0)
+        cols = torch.arange(width, device=device).repeat(height).unsqueeze(0)
+        mask = torch.ones((1, height * width), dtype=torch.bool, device=device)
+        return rows.long(), cols.long(), mask
 
     def _refine_one_block(
         self,
@@ -292,6 +353,8 @@ class ArcOutputDiffusion(nn.Module):
         context_object_widths: Tensor | None = None,
         context_object_rel_rows: Tensor | None = None,
         context_object_rel_cols: Tensor | None = None,
+        target_heights: Tensor | None = None,
+        target_widths: Tensor | None = None,
     ) -> dict[str, Tensor]:
         batch = target_colors.shape[0]
         t = self.noise_schedule.sample_t(batch, device=str(target_colors.device))
@@ -329,6 +392,9 @@ class ArcOutputDiffusion(nn.Module):
         n_masked = effective_mask.sum()
         loss = self._masked_loss(logits, target_colors, effective_mask)
         aux_loss = torch.zeros((), device=target_colors.device)
+        shape_loss = torch.zeros((), device=target_colors.device)
+        shape_height_logits = torch.empty(0, device=target_colors.device)
+        shape_width_logits = torch.empty(0, device=target_colors.device)
         if self.aux_loss_weight > 0.0 and len(intermediates) > 1:
             aux_terms = [
                 self._masked_loss(
@@ -340,10 +406,34 @@ class ArcOutputDiffusion(nn.Module):
             ]
             aux_loss = torch.stack(aux_terms).mean()
             loss = loss + self.aux_loss_weight * aux_loss
+        if self.use_shape_head:
+            if target_heights is None or target_widths is None:
+                raise ValueError(
+                    "target_heights and target_widths are required with use_shape_head=True"
+                )
+            shape_height_logits, shape_width_logits = self._shape_logits_from_context(
+                context_inputs,
+                context_mask,
+            )
+            height_labels = (target_heights - 1).clamp(min=0, max=self.max_grid_size - 1)
+            width_labels = (target_widths - 1).clamp(min=0, max=self.max_grid_size - 1)
+            shape_loss = (
+                functional.cross_entropy(shape_height_logits, height_labels)
+                + functional.cross_entropy(shape_width_logits, width_labels)
+            ) * 0.5
+            loss = loss + self.shape_loss_weight * shape_loss
         with torch.no_grad():
             preds = logits.argmax(dim=-1)
             correct = ((preds == target_colors) & effective_mask).float().sum()
             masked_acc = correct / n_masked
+            if self.use_shape_head:
+                height_acc = (shape_height_logits.argmax(dim=-1) == height_labels).float().mean()
+                width_acc = (shape_width_logits.argmax(dim=-1) == width_labels).float().mean()
+                shape_acc = (height_acc + width_acc) * 0.5
+            else:
+                height_acc = torch.zeros((), device=target_colors.device)
+                width_acc = torch.zeros((), device=target_colors.device)
+                shape_acc = torch.zeros((), device=target_colors.device)
         return {
             "loss": loss,
             "logits": logits,
@@ -351,6 +441,12 @@ class ArcOutputDiffusion(nn.Module):
             "masked_ratio": is_masked.float().mean(),
             "n_masked": n_masked,
             "aux_loss": aux_loss,
+            "shape_loss": shape_loss,
+            "shape_height_logits": shape_height_logits,
+            "shape_width_logits": shape_width_logits,
+            "shape_height_acc": height_acc,
+            "shape_width_acc": width_acc,
+            "shape_acc": shape_acc,
         }
 
     @torch.no_grad()
@@ -442,6 +538,161 @@ class ArcOutputDiffusion(nn.Module):
             torch.where(target_mask.bool(), current, torch.zeros_like(current)),
             torch.where(target_mask.bool(), token_log_probs, torch.zeros_like(token_log_probs)),
         )
+
+    @torch.no_grad()
+    def predict_shapes(
+        self,
+        context_colors: Tensor,
+        context_rows: Tensor,
+        context_cols: Tensor,
+        context_roles: Tensor,
+        context_examples: Tensor,
+        context_mask: Tensor,
+        top_k: int = 5,
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
+    ) -> list[list[ShapeCandidate]]:
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
+        if not self.use_shape_head:
+            return [[] for _ in range(context_colors.shape[0])]
+        context_inputs = self._encode_context(
+            context_colors=context_colors,
+            context_rows=context_rows,
+            context_cols=context_cols,
+            context_roles=context_roles,
+            context_examples=context_examples,
+            context_object_ids=context_object_ids,
+            context_object_size_buckets=context_object_size_buckets,
+            context_object_heights=context_object_heights,
+            context_object_widths=context_object_widths,
+            context_object_rel_rows=context_object_rel_rows,
+            context_object_rel_cols=context_object_rel_cols,
+        )
+        height_logits, width_logits = self._shape_logits_from_context(context_inputs, context_mask)
+        height_log_probs = functional.log_softmax(height_logits, dim=-1)
+        width_log_probs = functional.log_softmax(width_logits, dim=-1)
+        k = min(top_k, self.max_grid_size)
+        height_scores, height_idxs = torch.topk(height_log_probs, k=k, dim=-1)
+        width_scores, width_idxs = torch.topk(width_log_probs, k=k, dim=-1)
+        batch_candidates: list[list[ShapeCandidate]] = []
+        for batch_idx in range(context_colors.shape[0]):
+            candidates: list[ShapeCandidate] = []
+            for height_rank in range(k):
+                for width_rank in range(k):
+                    height = int(height_idxs[batch_idx, height_rank].item()) + 1
+                    width = int(width_idxs[batch_idx, width_rank].item()) + 1
+                    log_prob = float(
+                        height_scores[batch_idx, height_rank].item()
+                        + width_scores[batch_idx, width_rank].item()
+                    )
+                    candidates.append(
+                        ShapeCandidate(
+                            height=height,
+                            width=width,
+                            log_prob=log_prob,
+                            source="shape_head",
+                        )
+                    )
+            candidates.sort(key=lambda candidate: candidate.log_prob, reverse=True)
+            batch_candidates.append(candidates[:top_k])
+        return batch_candidates
+
+    @torch.no_grad()
+    def sample_candidates(
+        self,
+        context_colors: Tensor,
+        context_rows: Tensor,
+        context_cols: Tensor,
+        context_roles: Tensor,
+        context_examples: Tensor,
+        context_mask: Tensor,
+        candidate_shapes: list[ShapeCandidate],
+        steps: int = 64,
+        inference_mode: str = "greedy",
+        num_candidates: int = 8,
+        temperature_start: float = 1.0,
+        temperature_end: float = 0.1,
+        ensemble_strategy: str = "confidence",
+        context_object_ids: Tensor | None = None,
+        context_object_size_buckets: Tensor | None = None,
+        context_object_heights: Tensor | None = None,
+        context_object_widths: Tensor | None = None,
+        context_object_rel_rows: Tensor | None = None,
+        context_object_rel_cols: Tensor | None = None,
+    ) -> list[StructuredCandidate]:
+        if context_colors.shape[0] != 1:
+            raise ValueError("sample_candidates currently supports batch size 1")
+        if inference_mode not in {"greedy", "ensemble"}:
+            raise ValueError("inference_mode must be 'greedy' or 'ensemble'")
+
+        candidates: list[StructuredCandidate] = []
+        for shape in candidate_shapes:
+            target_rows, target_cols, target_mask = self._target_grid_tensors(
+                shape.height,
+                shape.width,
+                self.device,
+            )
+            if inference_mode == "greedy":
+                sample, token_log_probs = self._sample_with_scores(
+                    context_colors=context_colors,
+                    context_rows=context_rows,
+                    context_cols=context_cols,
+                    context_roles=context_roles,
+                    context_examples=context_examples,
+                    context_mask=context_mask,
+                    target_rows=target_rows,
+                    target_cols=target_cols,
+                    target_mask=target_mask,
+                    steps=steps,
+                    context_object_ids=context_object_ids,
+                    context_object_size_buckets=context_object_size_buckets,
+                    context_object_heights=context_object_heights,
+                    context_object_widths=context_object_widths,
+                    context_object_rel_rows=context_object_rel_rows,
+                    context_object_rel_cols=context_object_rel_cols,
+                )
+            else:
+                sample, token_log_probs = self._sample_ensemble_with_scores(
+                    context_colors=context_colors,
+                    context_rows=context_rows,
+                    context_cols=context_cols,
+                    context_roles=context_roles,
+                    context_examples=context_examples,
+                    context_mask=context_mask,
+                    target_rows=target_rows,
+                    target_cols=target_cols,
+                    target_mask=target_mask,
+                    steps=steps,
+                    num_candidates=num_candidates,
+                    temperature_start=temperature_start,
+                    temperature_end=temperature_end,
+                    strategy=ensemble_strategy,
+                    context_object_ids=context_object_ids,
+                    context_object_size_buckets=context_object_size_buckets,
+                    context_object_heights=context_object_heights,
+                    context_object_widths=context_object_widths,
+                    context_object_rel_rows=context_object_rel_rows,
+                    context_object_rel_cols=context_object_rel_cols,
+                )
+            valid_scores = token_log_probs[0][target_mask[0]]
+            mean_log_prob = float(valid_scores.mean().item()) if valid_scores.numel() else 0.0
+            candidates.append(
+                StructuredCandidate(
+                    height=shape.height,
+                    width=shape.width,
+                    sample=sample[0],
+                    token_log_probs=token_log_probs[0],
+                    mean_token_log_prob=mean_log_prob,
+                    shape_log_prob=shape.log_prob,
+                    source=shape.source,
+                )
+            )
+        return candidates
 
     @torch.no_grad()
     def sample_with_trace(

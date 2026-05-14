@@ -59,11 +59,17 @@ trainer exits with an explicit error instead of falling back to CPU/MPS.
 Structured encoder training also supports optional memory/regularization controls:
 `--gradient-checkpointing`, `--aux-loss-weight`, `--stochastic-depth-prob`,
 `--augment-color-permutation`, `--augment-translation`, `--augment-grid-noise`,
-`--curriculum`, and `--use-object-features`.
+`--curriculum`, `--use-object-features`, and `--use-shape-head`.
 
 Use `--eval-report report.json` to write structured evaluation metrics and
 per-example rows as JSON. Use `--debug-dir debug/arc --debug-limit 5` to write
 per-example predicted grids, confidence grids, and greedy diffusion trajectories.
+By default structured evaluation still uses the held-out target shape as an
+oracle canvas. Add `--infer-shape` to evaluate the harder ARC-AGI setting where
+the output shape is proposed from the query input, demonstration outputs, and
+the optional learned shape head. The report then includes `shape_exact`,
+`shape_topk_hit`, `height_acc`, `width_acc`, and `oracle_shape_exact` so the
+shape problem is separated from grid-cell denoising.
 
 Useful first ablations:
 
@@ -79,8 +85,20 @@ uv run python src/rdlm/train_arc.py --arch structured_encoder --eval-only \
   --inference-mode ensemble --num-candidates 8 \
   --eval-report reports/ensemble.json
 
+# Inferred-shape evaluation
+uv run python src/rdlm/train_arc.py --arch structured_encoder --eval-only \
+  --eval-dir /path/to/arc/eval_tasks --resume checkpoints/arc/latest.pt \
+  --infer-shape --shape-top-k 5 --dump-candidates \
+  --eval-report reports/infer_shape.json --debug-dir debug/infer_shape
+
 # Object-feature model path
 uv run python src/rdlm/train_arc.py --arch structured_encoder --device cuda \
   --data-dir /path/to/arc/tasks --eval-dir /path/to/arc/eval_tasks \
   --use-object-features --checkpoint-dir checkpoints/arc_objects
+
+# Object features plus the learned shape head
+uv run python src/rdlm/train_arc.py --arch structured_encoder --device cuda \
+  --data-dir /path/to/arc/tasks --eval-dir /path/to/arc/eval_tasks \
+  --use-object-features --use-shape-head --shape-loss-weight 0.1 \
+  --checkpoint-dir checkpoints/arc_shape
 ```

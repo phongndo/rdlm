@@ -20,13 +20,16 @@ from rdlm.arc import (
     serialize_grid,
     structured_example_difficulty,
 )
-from rdlm.arc_model import ArcOutputDiffusion
+from rdlm.arc_model import ArcOutputDiffusion, ShapeCandidate, StructuredCandidate
 from rdlm.diffusion_lm import RecursiveDiffusionLM
 from rdlm.train_arc import (
     create_model,
     evaluate_structured,
+    propose_mixed_shape_candidates,
+    score_structured_candidate,
     structured_forward_kwargs,
     structured_prediction_metrics,
+    structured_prediction_metrics_for_shapes,
 )
 
 
@@ -76,6 +79,8 @@ class ArcSerializationTests(unittest.TestCase):
         self.assertEqual(batch["target_colors"][0, 0].item(), 2)
         self.assertTrue(batch["context_mask"].any())
         self.assertEqual(batch["target_shapes"], [(1, 1)])
+        self.assertEqual(batch["target_heights"].tolist(), [1])
+        self.assertEqual(batch["target_widths"].tolist(), [1])
         self.assertIn("context_object_ids", batch)
         self.assertEqual(batch["context_object_ids"].shape, batch["context_colors"].shape)
 
@@ -186,7 +191,7 @@ class ArcTrainingSmokeTests(unittest.TestCase):
             "test": [{"input": [[3]], "output": [[4]]}],
         }
         examples = build_structured_examples_from_task("tiny", task)
-        batch = collate_structured_arc_examples([examples[0]])
+        batch = collate_structured_arc_examples([examples[-1]])
         model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
@@ -229,6 +234,32 @@ class ArcTrainingSmokeTests(unittest.TestCase):
 
         self.assertTrue(torch.isfinite(out["loss"]))
 
+    def test_one_structured_encoder_step_with_shape_head(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2, 2], [0, 2]]}],
+            "test": [{"input": [[3]], "output": [[4, 4], [0, 4]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[0]])
+        model = ArcOutputDiffusion(
+            dim=32,
+            max_grid_size=30,
+            max_examples=8,
+            num_heads=4,
+            use_shape_head=True,
+            shape_loss_weight=0.5,
+        )
+
+        out = model(**structured_forward_kwargs(batch))
+        out["loss"].backward()
+
+        self.assertTrue(torch.isfinite(out["loss"]))
+        self.assertTrue(torch.isfinite(out["shape_loss"]))
+        self.assertEqual(out["shape_height_logits"].shape, (1, 30))
+        self.assertEqual(out["shape_width_logits"].shape, (1, 30))
+        self.assertIsNotNone(model.shape_height_head.weight.grad)
+        self.assertIsNotNone(model.shape_width_head.weight.grad)
+
     def test_structured_prediction_metrics_capture_partial_errors(self):
         generated = torch.tensor([[1, 2, 0, 0]])
         expected = torch.tensor([[1, 3, 0, 4]])
@@ -249,6 +280,184 @@ class ArcTrainingSmokeTests(unittest.TestCase):
         self.assertLess(metrics["nonzero_iou"], 1.0)
         self.assertGreater(metrics["color_hist_l1"], 0.0)
         self.assertAlmostEqual(metrics["mean_confidence"], 0.75, places=6)
+
+    def test_structured_prediction_metrics_penalize_wrong_shape(self):
+        metrics = structured_prediction_metrics_for_shapes(
+            generated=torch.tensor([1]),
+            expected=torch.tensor([1, 2, 3, 4]),
+            generated_shape=(1, 1),
+            expected_shape=(2, 2),
+            token_log_probs=torch.log(torch.tensor([0.9])),
+        )
+
+        self.assertFalse(metrics["exact"])
+        self.assertEqual(metrics["cell_count"], 4)
+        self.assertEqual(metrics["correct_count"], 1)
+        self.assertEqual(metrics["cell_acc"], 0.25)
+        self.assertGreater(metrics["color_hist_l1"], 0.0)
+
+    def test_mixed_shape_candidates_merge_priors_and_shape_head(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2, 2], [2, 2]]}],
+            "test": [{"input": [[3]], "output": [[4, 4, 4], [4, 4, 4], [4, 4, 4]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[-1]])
+        model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+
+        def fake_predict_shapes(self, **kwargs):
+            return [
+                [
+                    ShapeCandidate(2, 2, -0.2, "shape_head"),
+                    ShapeCandidate(3, 3, -0.3, "shape_head"),
+                ]
+            ]
+
+        model.predict_shapes = types.MethodType(fake_predict_shapes, model)
+
+        candidates = propose_mixed_shape_candidates(model, batch, top_k=3)
+
+        self.assertEqual(
+            [(candidate.height, candidate.width) for candidate in candidates],
+            [(1, 1), (2, 2), (3, 3)],
+        )
+        self.assertIn("demo_output", candidates[1].source)
+        self.assertIn("shape_head", candidates[1].source)
+
+    def test_candidate_score_uses_shape_weight_and_prior_bonus(self):
+        candidate = StructuredCandidate(
+            height=1,
+            width=1,
+            sample=torch.tensor([0]),
+            token_log_probs=torch.tensor([-0.5]),
+            mean_token_log_prob=-1.0,
+            shape_log_prob=-2.0,
+            source="query_input+shape_head",
+        )
+
+        self.assertAlmostEqual(score_structured_candidate(candidate, 0.25), -1.45)
+
+    def test_inferred_shape_eval_does_not_use_target_shape_for_candidates(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4, 4], [4, 4]]}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "task.json"
+            path.write_text(json.dumps(task), encoding="utf-8")
+            dataset = ArcStructuredDataset([path])
+            dataset.examples = [dataset.examples[-1]]
+            model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+            recorded_shapes: list[tuple[int, int]] = []
+
+            def fake_sample_with_scores(self, target_rows, **kwargs):
+                return (
+                    torch.zeros_like(target_rows),
+                    torch.zeros_like(target_rows, dtype=torch.float),
+                )
+
+            def fake_sample_candidates(self, **kwargs):
+                candidate_shapes = kwargs["candidate_shapes"]
+                recorded_shapes.extend(
+                    (candidate.height, candidate.width) for candidate in candidate_shapes
+                )
+                candidate = candidate_shapes[0]
+                return [
+                    StructuredCandidate(
+                        height=candidate.height,
+                        width=candidate.width,
+                        sample=torch.tensor([0]),
+                        token_log_probs=torch.tensor([0.0]),
+                        mean_token_log_prob=0.0,
+                        shape_log_prob=candidate.log_prob,
+                        source=candidate.source,
+                    )
+                ]
+
+            model._sample_with_scores = types.MethodType(fake_sample_with_scores, model)
+            model.sample_candidates = types.MethodType(fake_sample_candidates, model)
+
+            metrics = evaluate_structured(
+                model,
+                dataset,
+                "cpu",
+                limit=1,
+                sample_steps=1,
+                infer_shape=True,
+                shape_top_k=5,
+            )
+
+        self.assertNotIn((2, 2), recorded_shapes)
+        self.assertEqual(metrics["shape_topk_hit"], 0.0)
+        self.assertEqual(metrics["shape_exact"], 0.0)
+
+    def test_inferred_shape_eval_can_select_shape_head_candidate(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4, 4], [4, 4]]}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "task.json"
+            path.write_text(json.dumps(task), encoding="utf-8")
+            dataset = ArcStructuredDataset([path])
+            dataset.examples = [dataset.examples[-1]]
+            model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+
+            def fake_predict_shapes(self, **kwargs):
+                return [[ShapeCandidate(2, 2, -0.2, "shape_head")]]
+
+            def fake_sample_with_scores(self, target_rows, **kwargs):
+                return (
+                    torch.zeros_like(target_rows),
+                    torch.zeros_like(target_rows, dtype=torch.float),
+                )
+
+            def fake_sample_candidates(self, **kwargs):
+                candidates = []
+                for shape in kwargs["candidate_shapes"]:
+                    if (shape.height, shape.width) == (2, 2):
+                        candidates.append(
+                            StructuredCandidate(
+                                height=2,
+                                width=2,
+                                sample=torch.tensor([4, 4, 4, 4]),
+                                token_log_probs=torch.zeros(4),
+                                mean_token_log_prob=0.0,
+                                shape_log_prob=shape.log_prob,
+                                source=shape.source,
+                            )
+                        )
+                    else:
+                        candidates.append(
+                            StructuredCandidate(
+                                height=shape.height,
+                                width=shape.width,
+                                sample=torch.zeros(shape.height * shape.width, dtype=torch.long),
+                                token_log_probs=torch.full((shape.height * shape.width,), -10.0),
+                                mean_token_log_prob=-10.0,
+                                shape_log_prob=shape.log_prob,
+                                source=shape.source,
+                            )
+                        )
+                return candidates
+
+            model.predict_shapes = types.MethodType(fake_predict_shapes, model)
+            model._sample_with_scores = types.MethodType(fake_sample_with_scores, model)
+            model.sample_candidates = types.MethodType(fake_sample_candidates, model)
+
+            metrics = evaluate_structured(
+                model,
+                dataset,
+                "cpu",
+                limit=1,
+                sample_steps=1,
+                infer_shape=True,
+                shape_top_k=3,
+            )
+
+        self.assertEqual(metrics["exact"], 1.0)
+        self.assertEqual(metrics["shape_exact"], 1.0)
+        self.assertEqual(metrics["shape_topk_hit"], 1.0)
 
     def test_structured_refinement_checkpointing_keeps_initial_state_gradients(self):
         task = {
@@ -391,6 +600,8 @@ class ArcTrainingSmokeTests(unittest.TestCase):
         self.assertIn("summary", report)
         self.assertIn("examples", report)
         self.assertEqual(len(debug_files), 1)
+        self.assertIn("shape_exact", metrics)
+        self.assertIn("predicted_shape", debug_payload)
         self.assertIn("trajectory", debug_payload)
         self.assertIn("confidence_grid", debug_payload)
 
