@@ -15,16 +15,28 @@ from rdlm.arc import (
     MASK_TOKEN_ID,
     VOCAB_SIZE,
     ArcDataset,
+    ArcStructuredDataset,
     collate_arc_examples,
+    collate_structured_arc_examples,
     decode_tokens,
     find_arc_json_files,
     parse_grid,
 )
+from rdlm.arc_model import ArcOutputDiffusion
 from rdlm.diffusion_lm import NoiseSchedule, RecursiveDiffusionLM
 from rdlm.trm import TinyRecursiveModel
 
+ArchitectureModel = RecursiveDiffusionLM | ArcOutputDiffusion
+
 
 def choose_device(name: str) -> str:
+    if name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "--device cuda was requested, but this PyTorch build cannot access CUDA. "
+            "Install a CUDA-enabled torch build on the NVIDIA GPU host."
+        )
+    if name == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("--device mps was requested, but MPS is unavailable.")
     if name != "auto":
         return name
     if torch.cuda.is_available():
@@ -50,9 +62,17 @@ def create_model(dim: int, seq_len: int) -> RecursiveDiffusionLM:
     )
 
 
+def create_structured_model(args: argparse.Namespace) -> ArcOutputDiffusion:
+    return ArcOutputDiffusion(
+        dim=args.dim,
+        max_grid_size=args.max_grid_size,
+        max_examples=args.max_examples,
+    )
+
+
 def save_checkpoint(
     path: Path,
-    model: RecursiveDiffusionLM,
+    model: ArchitectureModel,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     step: int,
@@ -73,7 +93,7 @@ def save_checkpoint(
 
 def load_checkpoint(
     path: Path,
-    model: RecursiveDiffusionLM,
+    model: ArchitectureModel,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     device: str,
@@ -126,7 +146,49 @@ def evaluate(
     return {"exact": exact / total, "valid": valid / total}
 
 
-def build_dataset(args: argparse.Namespace) -> tuple[ArcDataset, ArcDataset | None]:
+@torch.no_grad()
+def evaluate_structured(
+    model: ArcOutputDiffusion,
+    dataset: ArcStructuredDataset,
+    device: str,
+    limit: int,
+    sample_steps: int,
+) -> dict[str, float]:
+    model.eval()
+    total = min(limit, len(dataset))
+    exact = 0
+
+    for idx in range(total):
+        batch = collate_structured_arc_examples([dataset[idx]])
+        moved = {
+            key: value.to(device)
+            for key, value in batch.items()
+            if isinstance(value, torch.Tensor)
+        }
+        generated = model.sample(
+            context_colors=moved["context_colors"],
+            context_rows=moved["context_rows"],
+            context_cols=moved["context_cols"],
+            context_roles=moved["context_roles"],
+            context_examples=moved["context_examples"],
+            context_mask=moved["context_mask"],
+            target_rows=moved["target_rows"],
+            target_cols=moved["target_cols"],
+            target_mask=moved["target_mask"],
+            steps=sample_steps,
+        )
+        expected = moved["target_colors"]
+        target_mask = moved["target_mask"].bool()
+        if torch.equal(generated[target_mask].cpu(), expected[target_mask].cpu()):
+            exact += 1
+
+    model.train()
+    if total == 0:
+        return {"exact": 0.0, "valid": 1.0}
+    return {"exact": exact / total, "valid": 1.0}
+
+
+def build_serialized_dataset(args: argparse.Namespace) -> tuple[ArcDataset, ArcDataset | None]:
     train_files = find_arc_json_files(args.train_dir or args.data_dir)
     if not train_files:
         raise FileNotFoundError("no ARC train JSON files found")
@@ -136,6 +198,29 @@ def build_dataset(args: argparse.Namespace) -> tuple[ArcDataset, ArcDataset | No
     eval_files = find_arc_json_files(args.eval_dir)
     if eval_files:
         eval_dataset = ArcDataset(eval_files, seq_len=args.seq_len)
+    return train_dataset, eval_dataset
+
+
+def build_structured_dataset(
+    args: argparse.Namespace,
+) -> tuple[ArcStructuredDataset, ArcStructuredDataset | None]:
+    train_files = find_arc_json_files(args.train_dir or args.data_dir)
+    if not train_files:
+        raise FileNotFoundError("no ARC train JSON files found")
+    train_dataset = ArcStructuredDataset(
+        train_files,
+        max_grid_size=args.max_grid_size,
+        max_examples=args.max_examples,
+    )
+
+    eval_dataset = None
+    eval_files = find_arc_json_files(args.eval_dir)
+    if eval_files:
+        eval_dataset = ArcStructuredDataset(
+            eval_files,
+            max_grid_size=args.max_grid_size,
+            max_examples=args.max_examples,
+        )
     return train_dataset, eval_dataset
 
 
@@ -149,9 +234,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--train-dir", type=Path, default=None, help="Training ARC JSON directory")
     parser.add_argument("--eval-dir", type=Path, default=None, help="Evaluation ARC JSON directory")
+    parser.add_argument(
+        "--arch",
+        choices=["serialized", "structured_encoder"],
+        default="structured_encoder",
+        help="ARC architecture to train",
+    )
     parser.add_argument("--seq-len", type=int, default=1024)
+    parser.add_argument("--max-grid-size", type=int, default=30)
+    parser.add_argument("--max-examples", type=int, default=8)
     parser.add_argument("--dim", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--steps", type=int, default=20000)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--log-every", type=int, default=100)
@@ -166,25 +260,71 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    if args.data_dir is None and args.train_dir is None:
-        raise SystemExit("provide --data-dir or --train-dir")
+def move_tensor_batch(batch: dict[str, Any], device: str) -> dict[str, Any]:
+    return {
+        key: value.to(device) if isinstance(value, torch.Tensor) else value
+        for key, value in batch.items()
+    }
 
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    device = choose_device(args.device)
 
-    train_dataset, eval_dataset = build_dataset(args)
+def train_serialized(args: argparse.Namespace, device: str) -> None:
+    train_dataset, eval_dataset = build_serialized_dataset(args)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=collate_arc_examples,
+        num_workers=args.num_workers,
+        pin_memory=device == "cuda",
     )
     train_iter = iter(train_loader)
-
     model = create_model(dim=args.dim, seq_len=args.seq_len).to(device)
+    run_training_loop(
+        args,
+        device,
+        model,
+        train_dataset,
+        eval_dataset,
+        train_loader,
+        train_iter,
+        evaluate,
+    )
+
+
+def train_structured(args: argparse.Namespace, device: str) -> None:
+    train_dataset, eval_dataset = build_structured_dataset(args)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=collate_structured_arc_examples,
+        num_workers=args.num_workers,
+        pin_memory=device == "cuda",
+    )
+    train_iter = iter(train_loader)
+    model = create_structured_model(args).to(device)
+    run_training_loop(
+        args,
+        device,
+        model,
+        train_dataset,
+        eval_dataset,
+        train_loader,
+        train_iter,
+        evaluate_structured,
+    )
+
+
+def run_training_loop(
+    args: argparse.Namespace,
+    device: str,
+    model: ArchitectureModel,
+    train_dataset: ArcDataset | ArcStructuredDataset,
+    eval_dataset: ArcDataset | ArcStructuredDataset | None,
+    train_loader: DataLoader,
+    train_iter,
+    eval_fn,
+) -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.steps)
     start_step = 0
@@ -193,6 +333,7 @@ def main() -> None:
 
     total_params = sum(p.numel() for p in model.parameters())
     eval_count = len(eval_dataset) if eval_dataset else 0
+    print(f"Architecture: {args.arch}")
     print(f"ARC examples: train={len(train_dataset)}, eval={eval_count}")
     print(f"Model: {total_params:,} params on {device}")
     print(f"{'Step':>8} {'Loss':>10} {'Acc%':>8} {'Mask%':>8} {'LR':>10} {'Time':>8}")
@@ -208,12 +349,27 @@ def main() -> None:
             train_iter = iter(train_loader)
             batch = next(train_iter)
 
-        tokens = batch["tokens"].to(device)
-        padding_mask = batch["padding_mask"].to(device)
-        loss_mask = batch["loss_mask"].to(device)
-
+        moved = move_tensor_batch(batch, device)
         optimizer.zero_grad()
-        out = model(tokens, padding_mask=padding_mask, loss_mask=loss_mask)
+        if args.arch == "serialized":
+            out = model(
+                moved["tokens"],
+                padding_mask=moved["padding_mask"],
+                loss_mask=moved["loss_mask"],
+            )
+        else:
+            out = model(
+                context_colors=moved["context_colors"],
+                context_rows=moved["context_rows"],
+                context_cols=moved["context_cols"],
+                context_roles=moved["context_roles"],
+                context_examples=moved["context_examples"],
+                context_mask=moved["context_mask"],
+                target_colors=moved["target_colors"],
+                target_rows=moved["target_rows"],
+                target_cols=moved["target_cols"],
+                target_mask=moved["target_mask"],
+            )
         out["loss"].backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -230,7 +386,7 @@ def main() -> None:
             )
 
         if eval_dataset is not None and step > 0 and step % args.eval_every == 0:
-            metrics = evaluate(model, eval_dataset, device, args.eval_limit, args.sample_steps)
+            metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
             print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
 
         if step > 0 and step % args.save_every == 0:
@@ -261,6 +417,23 @@ def main() -> None:
             args,
         )
         print(f"Training complete. Final loss: {last_out['loss'].item():.4f}")
+
+
+def main() -> None:
+    args = parse_args()
+    if args.data_dir is None and args.train_dir is None:
+        raise SystemExit("provide --data-dir or --train-dir")
+
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    try:
+        device = choose_device(args.device)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.arch == "serialized":
+        train_serialized(args, device)
+    else:
+        train_structured(args, device)
 
 
 if __name__ == "__main__":
