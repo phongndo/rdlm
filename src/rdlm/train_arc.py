@@ -8,11 +8,10 @@ import hashlib
 import json
 import random
 import time
-from pathlib import Path, PosixPath
+from pathlib import Path
 from typing import Any, TypedDict
 
 import torch
-from torch.serialization import safe_globals
 from torch.utils.data import DataLoader
 
 from rdlm.arc import (
@@ -149,7 +148,6 @@ def save_checkpoint(
             "scheduler": scheduler.state_dict(),
             "step": step,
             "args": _jsonable_args(args),
-            "args": _jsonable_args(args),
         },
         path,
     )
@@ -282,7 +280,7 @@ def save_training_summary(
 ) -> None:
     summary_dir.mkdir(parents=True, exist_ok=True)
     summary: dict[str, Any] = {
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         "step": step,
         "architecture": args.arch,
         "args": _jsonable_args(args),
@@ -546,20 +544,79 @@ def _candidate_prior_bonus(candidate: StructuredCandidate | ShapeCandidate) -> f
     return 0.05 if sources & {"query_input", "demo_output"} else 0.0
 
 
+def _context_color_palette(batch: dict[str, torch.Tensor]) -> set[int]:
+    colors = batch["context_colors"][0].detach().cpu()
+    mask = batch["context_mask"][0].detach().cpu().bool()
+    return {int(color) for color in colors[mask].tolist() if 0 <= int(color) < NUM_OUTPUT_COLORS}
+
+
+def _demo_output_stats(batch: dict[str, torch.Tensor]) -> tuple[float, set[int]]:
+    roles = batch["context_roles"][0].detach().cpu()
+    colors = batch["context_colors"][0].detach().cpu()
+    mask = batch["context_mask"][0].detach().cpu().bool() & (roles == ROLE_DEMO_OUTPUT)
+    if not mask.any():
+        return 0.0, set()
+    values = colors[mask].long()
+    density = float((values != 0).float().mean().item())
+    palette = {int(color) for color in values.tolist() if 0 <= int(color) < NUM_OUTPUT_COLORS}
+    return density, palette
+
+
+def arc_heuristic_candidate_score(
+    candidate: StructuredCandidate,
+    batch: dict[str, torch.Tensor],
+) -> float:
+    """Training-free ARC reranking bonus from shape, palette, density, and stability."""
+    values = candidate.sample.detach().cpu().long().view(-1)
+    if values.numel() == 0:
+        return 0.0
+
+    context_palette = _context_color_palette(batch)
+    demo_density, demo_palette = _demo_output_stats(batch)
+    candidate_palette = {
+        int(color) for color in values.tolist() if 0 <= int(color) < NUM_OUTPUT_COLORS
+    }
+    nonzero_density = float((values != 0).float().mean().item())
+
+    score = 0.0
+    if candidate_palette and context_palette:
+        out_of_context = len(candidate_palette - context_palette) / len(candidate_palette)
+        score -= 0.15 * out_of_context
+    if candidate_palette and demo_palette:
+        overlap = len(candidate_palette & demo_palette) / len(candidate_palette | demo_palette)
+        score += 0.10 * overlap
+    if demo_palette:
+        score -= 0.10 * min(abs(nonzero_density - demo_density), 1.0)
+    if candidate.source.split("+").count("demo_output"):
+        score += 0.03
+    score += 0.10 * candidate.temporal_consistency
+    score += 0.05 * candidate.mean_confidence
+    score -= 0.02 * candidate.mean_entropy
+    return score
+
+
 def score_structured_candidate(
     candidate: StructuredCandidate,
     shape_score_weight: float,
+    arc_heuristic_score: float = 0.0,
+    arc_heuristic_weight: float = 1.0,
+    temporal_consistency_weight: float = 0.0,
 ) -> float:
     return (
         candidate.mean_token_log_prob
         + shape_score_weight * candidate.shape_log_prob
         + _candidate_prior_bonus(candidate)
+        + arc_heuristic_weight * arc_heuristic_score
+        + temporal_consistency_weight * candidate.temporal_consistency
     )
 
 
 def _candidate_report_row(
     candidate: StructuredCandidate,
     shape_score_weight: float,
+    arc_heuristic_score: float = 0.0,
+    arc_heuristic_weight: float = 1.0,
+    temporal_consistency_weight: float = 0.0,
 ) -> dict[str, Any]:
     shape = (candidate.height, candidate.width)
     values = [int(value) for value in candidate.sample.detach().cpu().view(-1).tolist()]
@@ -568,8 +625,19 @@ def _candidate_report_row(
         "source": candidate.source,
         "shape_log_prob": candidate.shape_log_prob,
         "mean_token_log_prob": candidate.mean_token_log_prob,
+        "mean_confidence": candidate.mean_confidence,
+        "mean_entropy": candidate.mean_entropy,
+        "temporal_consistency": candidate.temporal_consistency,
+        "steps_used": candidate.steps_used,
         "prior_bonus": _candidate_prior_bonus(candidate),
-        "score": score_structured_candidate(candidate, shape_score_weight),
+        "arc_heuristic_score": arc_heuristic_score,
+        "score": score_structured_candidate(
+            candidate,
+            shape_score_weight,
+            arc_heuristic_score=arc_heuristic_score,
+            arc_heuristic_weight=arc_heuristic_weight,
+            temporal_consistency_weight=temporal_consistency_weight,
+        ),
         "grid": _grid_from_values(values, shape),
     }
 
@@ -643,6 +711,15 @@ def evaluate_structured(
     temporal_vote: bool = False,
     temporal_vote_weight: str = "uniform",
     vote_start_ratio: float = 0.0,
+    adaptive_sample_steps: bool = False,
+    min_sample_steps: int = 8,
+    max_sample_steps: int | None = None,
+    reference_grid_area: int = 100,
+    early_stop_confidence: float | None = None,
+    early_stop_entropy: float | None = None,
+    early_stop_patience: int = 1,
+    arc_heuristic_weight: float = 1.0,
+    temporal_consistency_weight: float = 0.0,
 ) -> dict[str, float]:
     model.eval()
     total = min(limit, len(dataset))
@@ -686,6 +763,13 @@ def evaluate_structured(
                     temporal_vote=temporal_vote,
                     temporal_vote_weight=temporal_vote_weight,
                     vote_start_ratio=vote_start_ratio,
+                    adaptive_sample_steps=adaptive_sample_steps,
+                    min_sample_steps=min_sample_steps,
+                    max_sample_steps=max_sample_steps,
+                    reference_grid_area=reference_grid_area,
+                    early_stop_confidence=early_stop_confidence,
+                    early_stop_entropy=early_stop_entropy,
+                    early_stop_patience=early_stop_patience,
                 )
             else:
                 oracle_generated, oracle_log_probs = model._sample_ensemble_with_scores(
@@ -701,6 +785,13 @@ def evaluate_structured(
                     temporal_vote=temporal_vote,
                     temporal_vote_weight=temporal_vote_weight,
                     vote_start_ratio=vote_start_ratio,
+                    adaptive_sample_steps=adaptive_sample_steps,
+                    min_sample_steps=min_sample_steps,
+                    max_sample_steps=max_sample_steps,
+                    reference_grid_area=reference_grid_area,
+                    early_stop_confidence=early_stop_confidence,
+                    early_stop_entropy=early_stop_entropy,
+                    early_stop_patience=early_stop_patience,
                 )
             oracle_prediction_metrics = structured_prediction_metrics(
                 oracle_generated,
@@ -734,14 +825,28 @@ def evaluate_structured(
                 temporal_vote=temporal_vote,
                 temporal_vote_weight=temporal_vote_weight,
                 vote_start_ratio=vote_start_ratio,
+                adaptive_sample_steps=adaptive_sample_steps,
+                min_sample_steps=min_sample_steps,
+                max_sample_steps=max_sample_steps,
+                reference_grid_area=reference_grid_area,
+                early_stop_confidence=early_stop_confidence,
+                early_stop_entropy=early_stop_entropy,
+                early_stop_patience=early_stop_patience,
             )
             if not structured_candidates:
                 raise RuntimeError(f"no structured candidates generated for {task_id}")
+            candidate_heuristics = {
+                id(candidate): arc_heuristic_candidate_score(candidate, moved)
+                for candidate in structured_candidates
+            }
             selected = max(
                 structured_candidates,
                 key=lambda candidate: score_structured_candidate(
                     candidate,
                     shape_score_weight,
+                    arc_heuristic_score=candidate_heuristics[id(candidate)],
+                    arc_heuristic_weight=arc_heuristic_weight,
+                    temporal_consistency_weight=temporal_consistency_weight,
                 ),
             )
             predicted_shape = (selected.height, selected.width)
@@ -756,7 +861,13 @@ def evaluate_structured(
             )
             if dump_candidates:
                 candidate_rows = [
-                    _candidate_report_row(candidate, shape_score_weight)
+                    _candidate_report_row(
+                        candidate,
+                        shape_score_weight,
+                        arc_heuristic_score=candidate_heuristics[id(candidate)],
+                        arc_heuristic_weight=arc_heuristic_weight,
+                        temporal_consistency_weight=temporal_consistency_weight,
+                    )
                     for candidate in structured_candidates
                 ]
         else:
@@ -771,6 +882,13 @@ def evaluate_structured(
                     temporal_vote=temporal_vote,
                     temporal_vote_weight=temporal_vote_weight,
                     vote_start_ratio=vote_start_ratio,
+                    adaptive_sample_steps=adaptive_sample_steps,
+                    min_sample_steps=min_sample_steps,
+                    max_sample_steps=max_sample_steps,
+                    reference_grid_area=reference_grid_area,
+                    early_stop_confidence=early_stop_confidence,
+                    early_stop_entropy=early_stop_entropy,
+                    early_stop_patience=early_stop_patience,
                 )
                 generated = trace["samples"]
                 token_log_probs = trace["token_log_probs"]
@@ -788,6 +906,13 @@ def evaluate_structured(
                     temporal_vote=temporal_vote,
                     temporal_vote_weight=temporal_vote_weight,
                     vote_start_ratio=vote_start_ratio,
+                    adaptive_sample_steps=adaptive_sample_steps,
+                    min_sample_steps=min_sample_steps,
+                    max_sample_steps=max_sample_steps,
+                    reference_grid_area=reference_grid_area,
+                    early_stop_confidence=early_stop_confidence,
+                    early_stop_entropy=early_stop_entropy,
+                    early_stop_patience=early_stop_patience,
                 )
             predicted_shape = expected_shape
             generated_values = generated[0]
@@ -902,6 +1027,15 @@ def evaluate_structured(
                     "shape_top_k": shape_top_k,
                     "shape_score_weight": shape_score_weight,
                     "dump_candidates": dump_candidates,
+                    "adaptive_sample_steps": adaptive_sample_steps,
+                    "min_sample_steps": min_sample_steps,
+                    "max_sample_steps": max_sample_steps,
+                    "reference_grid_area": reference_grid_area,
+                    "early_stop_confidence": early_stop_confidence,
+                    "early_stop_entropy": early_stop_entropy,
+                    "early_stop_patience": early_stop_patience,
+                    "arc_heuristic_weight": arc_heuristic_weight,
+                    "temporal_consistency_weight": temporal_consistency_weight,
                     "args": _jsonable_args(args),
                 },
             },
@@ -973,7 +1107,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-grid-size", type=int, default=30)
     parser.add_argument("--max-examples", type=int, default=8)
     parser.add_argument("--dim", type=int, default=256)
-    parser.add_argument("--num-heads", type=int, default=4, help="Number of attention heads in the TinyBlock.")
+    parser.add_argument(
+        "--num-heads",
+        type=int,
+        default=4,
+        help="Number of attention heads in the TinyBlock.",
+    )
     parser.add_argument(
         "--num-latent-refinements",
         type=int,
@@ -1109,6 +1248,47 @@ def parse_args() -> argparse.Namespace:
         "0 = record from step 0, 0.5 = record from halfway.",
     )
     parser.add_argument(
+        "--adaptive-sample-steps",
+        action="store_true",
+        help="Scale structured inference steps by output area instead of using one fixed budget.",
+    )
+    parser.add_argument("--min-sample-steps", type=int, default=8)
+    parser.add_argument("--max-sample-steps", type=int, default=None)
+    parser.add_argument(
+        "--reference-grid-area",
+        type=int,
+        default=100,
+        help="Grid area that keeps --sample-steps unchanged when adaptive sampling is enabled.",
+    )
+    parser.add_argument(
+        "--early-stop-confidence",
+        type=float,
+        default=None,
+        help=(
+            "Reveal all remaining cells and stop once remaining confidence is at least this "
+            "value."
+        ),
+    )
+    parser.add_argument(
+        "--early-stop-entropy",
+        type=float,
+        default=None,
+        help="Reveal all remaining cells and stop once remaining entropy is at most this value.",
+    )
+    parser.add_argument("--early-stop-patience", type=int, default=1)
+    parser.add_argument(
+        "--arc-heuristic-weight",
+        type=float,
+        default=1.0,
+        help="Weight for ARC-specific palette/density/stability candidate reranking.",
+    )
+    parser.add_argument(
+        "--temporal-consistency-weight",
+        type=float,
+        default=0.0,
+        help="Additional inferred-shape candidate score weight for temporal consistency.",
+    )
+    parser.add_argument(
         "--infer-shape",
         action="store_true",
         help="Evaluate by proposing output shapes from context instead of using the target shape.",
@@ -1206,6 +1386,15 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
             temporal_vote=args.temporal_vote,
             temporal_vote_weight=args.temporal_vote_weight,
             vote_start_ratio=args.vote_start_ratio,
+            adaptive_sample_steps=args.adaptive_sample_steps,
+            min_sample_steps=args.min_sample_steps,
+            max_sample_steps=args.max_sample_steps,
+            reference_grid_area=args.reference_grid_area,
+            early_stop_confidence=args.early_stop_confidence,
+            early_stop_entropy=args.early_stop_entropy,
+            early_stop_patience=args.early_stop_patience,
+            arc_heuristic_weight=args.arc_heuristic_weight,
+            temporal_consistency_weight=args.temporal_consistency_weight,
         )
         print(
             f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
@@ -1330,6 +1519,15 @@ def run_training_loop(
                     temporal_vote=args.temporal_vote,
                     temporal_vote_weight=args.temporal_vote_weight,
                     vote_start_ratio=args.vote_start_ratio,
+                    adaptive_sample_steps=args.adaptive_sample_steps,
+                    min_sample_steps=args.min_sample_steps,
+                    max_sample_steps=args.max_sample_steps,
+                    reference_grid_area=args.reference_grid_area,
+                    early_stop_confidence=args.early_stop_confidence,
+                    early_stop_entropy=args.early_stop_entropy,
+                    early_stop_patience=args.early_stop_patience,
+                    arc_heuristic_weight=args.arc_heuristic_weight,
+                    temporal_consistency_weight=args.temporal_consistency_weight,
                 )
             else:
                 metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)

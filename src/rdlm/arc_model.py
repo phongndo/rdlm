@@ -39,6 +39,10 @@ class StructuredCandidate:
     mean_token_log_prob: float
     shape_log_prob: float
     source: str
+    mean_confidence: float = 0.0
+    mean_entropy: float = 0.0
+    temporal_consistency: float = 0.0
+    steps_used: int = 0
 
 
 class ArcStructuredEncoder(nn.Module):
@@ -300,7 +304,7 @@ class ArcOutputDiffusion(nn.Module):
         Returns:
             Adjusted confidence of same shape.
         """
-        batch, seq_len = preds.shape
+        batch, _seq_len = preds.shape
         device = preds.device
         neighbor_scores = torch.zeros_like(confidence)
 
@@ -397,7 +401,7 @@ class ArcOutputDiffusion(nn.Module):
         if not pred_history:
             return final_preds, final_log_probs
 
-        batch, seq_len = final_preds.shape
+        _batch, _seq_len = final_preds.shape
         device = final_preds.device
         n_steps = len(pred_history)
         mask = target_mask.bool()
@@ -429,6 +433,62 @@ class ArcOutputDiffusion(nn.Module):
         voted_log_probs = torch.where(mask, voted_log_probs, final_log_probs)
 
         return voted, voted_log_probs
+
+    @staticmethod
+    @torch.no_grad()
+    def _temporal_consistency(
+        final_preds: Tensor,
+        pred_history: list[Tensor],
+        target_mask: Tensor,
+    ) -> Tensor:
+        """Return per-example agreement between final predictions and history."""
+        if not pred_history:
+            return torch.ones(final_preds.shape[0], device=final_preds.device)
+        mask = target_mask.bool()
+        history = torch.stack(pred_history, dim=0)
+        matches = (history == final_preds.unsqueeze(0)) & mask.unsqueeze(0)
+        denom = mask.float().sum(dim=-1).clamp(min=1.0) * len(pred_history)
+        return matches.float().sum(dim=(0, 2)) / denom
+
+    @staticmethod
+    def _adaptive_steps(
+        steps: int,
+        target_mask: Tensor,
+        adaptive_sample_steps: bool,
+        min_sample_steps: int,
+        max_sample_steps: int | None,
+        reference_grid_area: int,
+    ) -> int:
+        if not adaptive_sample_steps:
+            return steps
+        if steps < 1:
+            raise ValueError("steps must be at least 1")
+        if min_sample_steps < 1:
+            raise ValueError("min_sample_steps must be at least 1")
+        if max_sample_steps is not None and max_sample_steps < min_sample_steps:
+            raise ValueError("max_sample_steps must be >= min_sample_steps")
+        reference = max(reference_grid_area, 1)
+        area = float(target_mask.bool().sum(dim=-1).float().mean().item())
+        scaled = round(steps * (area / reference) ** 0.5)
+        upper = max_sample_steps if max_sample_steps is not None else steps
+        return max(min_sample_steps, min(max(scaled, 1), upper))
+
+    @staticmethod
+    def _candidate_diagnostics(
+        token_log_probs: Tensor,
+        target_mask: Tensor,
+        temporal_consistency: Tensor,
+        steps_used: int,
+    ) -> dict[str, Tensor | int]:
+        mask = target_mask.bool()
+        denom = target_mask.float().sum(dim=-1).clamp(min=1.0)
+        mean_confidence = (token_log_probs.exp() * mask.float()).sum(dim=-1) / denom
+        return {
+            "mean_entropy": torch.zeros_like(mean_confidence),
+            "mean_confidence": mean_confidence,
+            "temporal_consistency": temporal_consistency,
+            "steps_used": steps_used,
+        }
 
     def _refine_one_block(
         self,
@@ -632,8 +692,24 @@ class ArcOutputDiffusion(nn.Module):
         temporal_vote: bool = False,
         temporal_vote_weight: str = "uniform",
         vote_start_ratio: float = 0.0,
-    ) -> tuple[Tensor, Tensor]:
+        adaptive_sample_steps: bool = False,
+        min_sample_steps: int = 8,
+        max_sample_steps: int | None = None,
+        reference_grid_area: int = 100,
+        early_stop_confidence: float | None = None,
+        early_stop_entropy: float | None = None,
+        early_stop_patience: int = 1,
+        return_diagnostics: bool = False,
+    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor, dict[str, Tensor | float | int]]:
         batch, target_len = target_rows.shape
+        steps = self._adaptive_steps(
+            steps,
+            target_mask,
+            adaptive_sample_steps,
+            min_sample_steps,
+            max_sample_steps,
+            reference_grid_area,
+        )
         current = torch.full(
             (batch, target_len),
             MASK_COLOR_ID - 1,
@@ -665,8 +741,12 @@ class ArcOutputDiffusion(nn.Module):
         # ── Calibration state ───────────────────────────────────────
         prev_preds: Tensor | None = None
         flip_counts: Tensor = torch.zeros((batch, target_len), device=self.device)
+        stable_steps = 0
+        last_entropy = torch.zeros((batch, target_len), dtype=torch.float, device=self.device)
+        steps_used = 0
 
         for step_idx in range(transfer_schedule.shape[1]):
+            steps_used = step_idx + 1
             if transfer_schedule.shape[1] <= 1:
                 temperature = temperature_end
             else:
@@ -695,6 +775,9 @@ class ArcOutputDiffusion(nn.Module):
                 preds.unsqueeze(-1),
             ).squeeze(-1)
             confidence = clean_pred_log_probs.exp()
+            probs = clean_log_probs.exp()
+            entropy = -(probs * clean_log_probs).sum(dim=-1)
+            last_entropy = entropy
 
             # ── Record prediction history for temporal voting ─────────
             if temporal_vote and step_idx >= vote_start_step:
@@ -729,16 +812,67 @@ class ArcOutputDiffusion(nn.Module):
             token_log_probs = torch.where(transfer, clean_pred_log_probs, token_log_probs)
             revealed = revealed | transfer
 
+            if bool((target_mask.bool() & ~revealed).any()):
+                remaining_mask = target_mask.bool() & ~revealed
+                confident = True
+                low_entropy = True
+                if early_stop_confidence is not None:
+                    remaining_conf = confidence[remaining_mask]
+                    confident = bool(
+                        remaining_conf.numel()
+                        and remaining_conf.min().item() >= early_stop_confidence
+                    )
+                if early_stop_entropy is not None:
+                    remaining_entropy = entropy[remaining_mask]
+                    low_entropy = bool(
+                        remaining_entropy.numel()
+                        and remaining_entropy.max().item() <= early_stop_entropy
+                    )
+                if (early_stop_confidence is not None or early_stop_entropy is not None) and (
+                    confident and low_entropy
+                ):
+                    stable_steps += 1
+                else:
+                    stable_steps = 0
+                if stable_steps >= max(early_stop_patience, 1):
+                    current = torch.where(remaining_mask, preds, current)
+                    token_log_probs = torch.where(
+                        remaining_mask,
+                        clean_pred_log_probs,
+                        token_log_probs,
+                    )
+                    revealed = revealed | remaining_mask
+                    break
+            elif bool((target_mask.bool() & revealed).all()):
+                break
+
         # ── Temporal voting post-processing ──────────────────────────
+        temporal_consistency = self._temporal_consistency(current, pred_history, target_mask)
         if temporal_vote and pred_history:
             current, token_log_probs = self._temporal_vote(
                 current, token_log_probs, pred_history, target_mask,
                 weight=temporal_vote_weight,
             )
 
+        samples = torch.where(target_mask.bool(), current, torch.zeros_like(current))
+        scores = torch.where(target_mask.bool(), token_log_probs, torch.zeros_like(token_log_probs))
+        if return_diagnostics:
+            valid_entropy = torch.where(
+                target_mask.bool(),
+                last_entropy,
+                torch.zeros_like(last_entropy),
+            )
+            denom = target_mask.float().sum(dim=-1).clamp(min=1.0)
+            diagnostics: dict[str, Tensor | float | int] = {
+                "mean_entropy": (valid_entropy * target_mask.float()).sum(dim=-1) / denom,
+                "mean_confidence": (scores.exp() * target_mask.float()).sum(dim=-1) / denom,
+                "temporal_consistency": temporal_consistency,
+                "steps_used": steps_used,
+            }
+            return samples, scores, diagnostics
         return (
-            torch.where(target_mask.bool(), current, torch.zeros_like(current)),
-            torch.where(target_mask.bool(), token_log_probs, torch.zeros_like(token_log_probs)),
+            samples,
+            scores,
         )
 
     @torch.no_grad()
@@ -833,6 +967,13 @@ class ArcOutputDiffusion(nn.Module):
         temporal_vote: bool = False,
         temporal_vote_weight: str = "uniform",
         vote_start_ratio: float = 0.0,
+        adaptive_sample_steps: bool = False,
+        min_sample_steps: int = 8,
+        max_sample_steps: int | None = None,
+        reference_grid_area: int = 100,
+        early_stop_confidence: float | None = None,
+        early_stop_entropy: float | None = None,
+        early_stop_patience: int = 1,
     ) -> list[StructuredCandidate]:
         if context_colors.shape[0] != 1:
             raise ValueError("sample_candidates currently supports batch size 1")
@@ -847,7 +988,7 @@ class ArcOutputDiffusion(nn.Module):
                 self.device,
             )
             if inference_mode == "greedy":
-                sample, token_log_probs = self._sample_with_scores(
+                sample_result = self._sample_with_scores(
                     context_colors=context_colors,
                     context_rows=context_rows,
                     context_cols=context_cols,
@@ -870,9 +1011,27 @@ class ArcOutputDiffusion(nn.Module):
                     temporal_vote=temporal_vote,
                     temporal_vote_weight=temporal_vote_weight,
                     vote_start_ratio=vote_start_ratio,
+                    adaptive_sample_steps=adaptive_sample_steps,
+                    min_sample_steps=min_sample_steps,
+                    max_sample_steps=max_sample_steps,
+                    reference_grid_area=reference_grid_area,
+                    early_stop_confidence=early_stop_confidence,
+                    early_stop_entropy=early_stop_entropy,
+                    early_stop_patience=early_stop_patience,
+                    return_diagnostics=True,
                 )
+                if len(sample_result) == 3:
+                    sample, token_log_probs, diagnostics = sample_result
+                else:
+                    sample, token_log_probs = sample_result
+                    diagnostics = self._candidate_diagnostics(
+                        token_log_probs,
+                        target_mask,
+                        torch.ones((1,), device=self.device),
+                        steps,
+                    )
             else:
-                sample, token_log_probs = self._sample_ensemble_with_scores(
+                sample_result = self._sample_ensemble_with_scores(
                     context_colors=context_colors,
                     context_rows=context_rows,
                     context_cols=context_cols,
@@ -899,9 +1058,30 @@ class ArcOutputDiffusion(nn.Module):
                     temporal_vote=temporal_vote,
                     temporal_vote_weight=temporal_vote_weight,
                     vote_start_ratio=vote_start_ratio,
+                    adaptive_sample_steps=adaptive_sample_steps,
+                    min_sample_steps=min_sample_steps,
+                    max_sample_steps=max_sample_steps,
+                    reference_grid_area=reference_grid_area,
+                    early_stop_confidence=early_stop_confidence,
+                    early_stop_entropy=early_stop_entropy,
+                    early_stop_patience=early_stop_patience,
+                    return_diagnostics=True,
                 )
+                if len(sample_result) == 3:
+                    sample, token_log_probs, diagnostics = sample_result
+                else:
+                    sample, token_log_probs = sample_result
+                    diagnostics = self._candidate_diagnostics(
+                        token_log_probs,
+                        target_mask,
+                        torch.ones((1,), device=self.device),
+                        steps,
+                    )
             valid_scores = token_log_probs[0][target_mask[0]]
             mean_log_prob = float(valid_scores.mean().item()) if valid_scores.numel() else 0.0
+            mean_confidence = diagnostics["mean_confidence"]
+            mean_entropy = diagnostics["mean_entropy"]
+            temporal_consistency = diagnostics["temporal_consistency"]
             candidates.append(
                 StructuredCandidate(
                     height=shape.height,
@@ -911,6 +1091,16 @@ class ArcOutputDiffusion(nn.Module):
                     mean_token_log_prob=mean_log_prob,
                     shape_log_prob=shape.log_prob,
                     source=shape.source,
+                    mean_confidence=float(mean_confidence[0].item())
+                    if isinstance(mean_confidence, Tensor)
+                    else float(mean_confidence),
+                    mean_entropy=float(mean_entropy[0].item())
+                    if isinstance(mean_entropy, Tensor)
+                    else float(mean_entropy),
+                    temporal_consistency=float(temporal_consistency[0].item())
+                    if isinstance(temporal_consistency, Tensor)
+                    else float(temporal_consistency),
+                    steps_used=int(diagnostics["steps_used"]),
                 )
             )
         return candidates
@@ -941,8 +1131,23 @@ class ArcOutputDiffusion(nn.Module):
         temporal_vote: bool = False,
         temporal_vote_weight: str = "uniform",
         vote_start_ratio: float = 0.0,
+        adaptive_sample_steps: bool = False,
+        min_sample_steps: int = 8,
+        max_sample_steps: int | None = None,
+        reference_grid_area: int = 100,
+        early_stop_confidence: float | None = None,
+        early_stop_entropy: float | None = None,
+        early_stop_patience: int = 1,
     ) -> dict[str, Tensor]:
         batch, target_len = target_rows.shape
+        steps = self._adaptive_steps(
+            steps,
+            target_mask,
+            adaptive_sample_steps,
+            min_sample_steps,
+            max_sample_steps,
+            reference_grid_area,
+        )
         current = torch.full(
             (batch, target_len),
             MASK_COLOR_ID - 1,
@@ -978,6 +1183,7 @@ class ArcOutputDiffusion(nn.Module):
         revealed_history: list[Tensor] = []
         sample_history: list[Tensor] = []
         confidence_history: list[Tensor] = []
+        stable_steps = 0
         for step_idx in range(transfer_schedule.shape[1]):
             remaining = (target_mask_bool & ~revealed).float().sum(dim=-1)
             total = target_mask.float().sum(dim=-1).clamp(min=1)
@@ -1038,6 +1244,47 @@ class ArcOutputDiffusion(nn.Module):
             confidence_history.append(
                 torch.where(target_mask_bool, confidence, torch.zeros_like(confidence))
             )
+            if bool((target_mask_bool & ~revealed).any()):
+                remaining_mask = target_mask_bool & ~revealed
+                confident = True
+                low_entropy = True
+                if early_stop_confidence is not None:
+                    remaining_conf = confidence[remaining_mask]
+                    confident = bool(
+                        remaining_conf.numel()
+                        and remaining_conf.min().item() >= early_stop_confidence
+                    )
+                if early_stop_entropy is not None:
+                    remaining_entropy = (-(clean_log_probs.exp() * clean_log_probs).sum(dim=-1))[
+                        remaining_mask
+                    ]
+                    low_entropy = bool(
+                        remaining_entropy.numel()
+                        and remaining_entropy.max().item() <= early_stop_entropy
+                    )
+                if (early_stop_confidence is not None or early_stop_entropy is not None) and (
+                    confident and low_entropy
+                ):
+                    stable_steps += 1
+                else:
+                    stable_steps = 0
+                if stable_steps >= max(early_stop_patience, 1):
+                    current = torch.where(remaining_mask, preds, current)
+                    token_log_probs = torch.where(
+                        remaining_mask,
+                        clean_pred_log_probs,
+                        token_log_probs,
+                    )
+                    revealed = revealed | remaining_mask
+                    sample_history[-1] = torch.where(
+                        target_mask_bool,
+                        current,
+                        torch.zeros_like(current),
+                    )
+                    revealed_history[-1] = revealed.clone()
+                    break
+            elif bool((target_mask_bool & revealed).all()):
+                break
 
         # ── Temporal voting post-processing ──────────────────────────
         if temporal_vote and pred_history:
@@ -1091,6 +1338,13 @@ class ArcOutputDiffusion(nn.Module):
         temporal_vote: bool = False,
         temporal_vote_weight: str = "uniform",
         vote_start_ratio: float = 0.0,
+        adaptive_sample_steps: bool = False,
+        min_sample_steps: int = 8,
+        max_sample_steps: int | None = None,
+        reference_grid_area: int = 100,
+        early_stop_confidence: float | None = None,
+        early_stop_entropy: float | None = None,
+        early_stop_patience: int = 1,
     ) -> Tensor:
         samples, _scores = self._sample_with_scores(
             context_colors=context_colors,
@@ -1115,6 +1369,13 @@ class ArcOutputDiffusion(nn.Module):
             temporal_vote=temporal_vote,
             temporal_vote_weight=temporal_vote_weight,
             vote_start_ratio=vote_start_ratio,
+            adaptive_sample_steps=adaptive_sample_steps,
+            min_sample_steps=min_sample_steps,
+            max_sample_steps=max_sample_steps,
+            reference_grid_area=reference_grid_area,
+            early_stop_confidence=early_stop_confidence,
+            early_stop_entropy=early_stop_entropy,
+            early_stop_patience=early_stop_patience,
         )
         return samples
 
@@ -1148,7 +1409,15 @@ class ArcOutputDiffusion(nn.Module):
         temporal_vote: bool = False,
         temporal_vote_weight: str = "uniform",
         vote_start_ratio: float = 0.0,
-    ) -> tuple[Tensor, Tensor]:
+        adaptive_sample_steps: bool = False,
+        min_sample_steps: int = 8,
+        max_sample_steps: int | None = None,
+        reference_grid_area: int = 100,
+        early_stop_confidence: float | None = None,
+        early_stop_entropy: float | None = None,
+        early_stop_patience: int = 1,
+        return_diagnostics: bool = False,
+    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor, dict[str, Tensor | float | int]]:
         if num_candidates < 1:
             raise ValueError("num_candidates must be at least 1")
         if temperature_start < 0 or temperature_end < 0:
@@ -1158,8 +1427,9 @@ class ArcOutputDiffusion(nn.Module):
 
         samples: list[Tensor] = []
         log_probs: list[Tensor] = []
+        diagnostics_list: list[dict[str, Tensor | float | int]] = []
         for _ in range(num_candidates):
-            sample, scores = self._sample_with_scores(
+            sample_result = self._sample_with_scores(
                 context_colors=context_colors,
                 context_rows=context_rows,
                 context_cols=context_cols,
@@ -1184,9 +1454,28 @@ class ArcOutputDiffusion(nn.Module):
                 temporal_vote=temporal_vote,
                 temporal_vote_weight=temporal_vote_weight,
                 vote_start_ratio=vote_start_ratio,
+                adaptive_sample_steps=adaptive_sample_steps,
+                min_sample_steps=min_sample_steps,
+                max_sample_steps=max_sample_steps,
+                reference_grid_area=reference_grid_area,
+                early_stop_confidence=early_stop_confidence,
+                early_stop_entropy=early_stop_entropy,
+                early_stop_patience=early_stop_patience,
+                return_diagnostics=True,
             )
+            if len(sample_result) == 3:
+                sample, scores, diagnostics = sample_result
+            else:
+                sample, scores = sample_result
+                diagnostics = self._candidate_diagnostics(
+                    scores,
+                    target_mask,
+                    torch.ones((target_rows.shape[0],), device=self.device),
+                    steps,
+                )
             samples.append(sample)
             log_probs.append(scores)
+            diagnostics_list.append(diagnostics)
 
         sample_stack = torch.stack(samples, dim=0)
         log_prob_stack = torch.stack(log_probs, dim=0)
@@ -1199,10 +1488,40 @@ class ArcOutputDiffusion(nn.Module):
             batch_idx = torch.arange(target_rows.shape[0], device=self.device)
             best = sample_stack[best_idx, batch_idx]
             best_scores = log_prob_stack[best_idx, batch_idx]
-            return (
+            result = (
                 torch.where(target_mask_bool, best, torch.zeros_like(best)),
                 torch.where(target_mask_bool, best_scores, torch.zeros_like(best_scores)),
             )
+            if return_diagnostics:
+                gathered = {
+                    "mean_entropy": torch.stack(
+                        [
+                            d["mean_entropy"]
+                            for d in diagnostics_list
+                            if isinstance(d["mean_entropy"], Tensor)
+                        ],
+                        dim=0,
+                    )[best_idx, batch_idx],
+                    "mean_confidence": torch.stack(
+                        [
+                            d["mean_confidence"]
+                            for d in diagnostics_list
+                            if isinstance(d["mean_confidence"], Tensor)
+                        ],
+                        dim=0,
+                    )[best_idx, batch_idx],
+                    "temporal_consistency": torch.stack(
+                        [
+                            d["temporal_consistency"]
+                            for d in diagnostics_list
+                            if isinstance(d["temporal_consistency"], Tensor)
+                        ],
+                        dim=0,
+                    )[best_idx, batch_idx],
+                    "steps_used": max(int(d["steps_used"]) for d in diagnostics_list),
+                }
+                return result[0], result[1], gathered
+            return result
 
         vote_counts = []
         vote_scores = []
@@ -1218,10 +1537,42 @@ class ArcOutputDiffusion(nn.Module):
         voted_scores = torch.gather(scores, -1, voted.unsqueeze(-1)).squeeze(-1)
         voted_counts = torch.gather(counts, -1, voted.unsqueeze(-1)).squeeze(-1).clamp(min=1)
         voted_scores = voted_scores / voted_counts
-        return (
+        result = (
             torch.where(target_mask_bool, voted, torch.zeros_like(voted)),
             torch.where(target_mask_bool, voted_scores, torch.zeros_like(voted_scores)),
         )
+        if return_diagnostics:
+            mean_entropy = torch.stack(
+                [
+                    d["mean_entropy"]
+                    for d in diagnostics_list
+                    if isinstance(d["mean_entropy"], Tensor)
+                ],
+                dim=0,
+            ).mean(dim=0)
+            mean_confidence = torch.stack(
+                [
+                    d["mean_confidence"]
+                    for d in diagnostics_list
+                    if isinstance(d["mean_confidence"], Tensor)
+                ],
+                dim=0,
+            ).mean(dim=0)
+            temporal_consistency = torch.stack(
+                [
+                    d["temporal_consistency"]
+                    for d in diagnostics_list
+                    if isinstance(d["temporal_consistency"], Tensor)
+                ],
+                dim=0,
+            ).mean(dim=0)
+            return result[0], result[1], {
+                "mean_entropy": mean_entropy,
+                "mean_confidence": mean_confidence,
+                "temporal_consistency": temporal_consistency,
+                "steps_used": max(int(d["steps_used"]) for d in diagnostics_list),
+            }
+        return result
 
     @torch.no_grad()
     def sample_ensemble(
@@ -1253,6 +1604,13 @@ class ArcOutputDiffusion(nn.Module):
         temporal_vote: bool = False,
         temporal_vote_weight: str = "uniform",
         vote_start_ratio: float = 0.0,
+        adaptive_sample_steps: bool = False,
+        min_sample_steps: int = 8,
+        max_sample_steps: int | None = None,
+        reference_grid_area: int = 100,
+        early_stop_confidence: float | None = None,
+        early_stop_entropy: float | None = None,
+        early_stop_patience: int = 1,
     ) -> Tensor:
         samples, _scores = self._sample_ensemble_with_scores(
             context_colors=context_colors,
@@ -1281,5 +1639,12 @@ class ArcOutputDiffusion(nn.Module):
             temporal_vote=temporal_vote,
             temporal_vote_weight=temporal_vote_weight,
             vote_start_ratio=vote_start_ratio,
+            adaptive_sample_steps=adaptive_sample_steps,
+            min_sample_steps=min_sample_steps,
+            max_sample_steps=max_sample_steps,
+            reference_grid_area=reference_grid_area,
+            early_stop_confidence=early_stop_confidence,
+            early_stop_entropy=early_stop_entropy,
+            early_stop_patience=early_stop_patience,
         )
         return samples
