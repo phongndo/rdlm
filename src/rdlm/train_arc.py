@@ -793,6 +793,7 @@ def evaluate_structured(
     eval_progress_every: int = 0,
     eval_start_index: int = 0,
     eval_skip_indices: set[int] | None = None,
+    eval_stage_log: bool = False,
 ) -> dict[str, float]:
     model.eval()
     total = min(limit, len(dataset))
@@ -802,6 +803,8 @@ def evaluate_structured(
     if eval_start_index > total:
         raise ValueError(f"eval_start_index={eval_start_index} exceeds eval total={total}")
     eval_start_time = time.time()
+    active_task_id = ""
+    active_idx = -1
     exact = 0
     total_cells = 0
     correct_cells = 0
@@ -922,6 +925,20 @@ def evaluate_structured(
             },
         }
 
+    def log_stage(stage: str, stage_start: float | None = None, details: str = "") -> float:
+        now = time.time()
+        if eval_stage_log:
+            elapsed_text = ""
+            if stage_start is not None:
+                elapsed_text = f" elapsed={now - stage_start:.1f}s"
+            details_text = f" {details}" if details else ""
+            print(
+                f"[eval-stage] idx={active_idx} task={active_task_id} "
+                f"{stage}{elapsed_text}{details_text}",
+                flush=True,
+            )
+        return now
+
     for idx in range(eval_start_index, total):
         if idx in skip_indices:
             if eval_progress_every > 0:
@@ -935,13 +952,17 @@ def evaluate_structured(
         target_mask = moved["target_mask"].bool()
         expected_shape = batch["target_shapes"][0]
         task_id = str(batch["task_ids"][0])
+        active_idx = idx
+        active_task_id = task_id
         trace = None
+        example_start = log_stage("start", details=f"expected_shape={expected_shape}")
 
         candidate_shape_set: set[tuple[int, int]] = {expected_shape}
         candidate_rows: list[dict[str, Any]] = []
         oracle_exact_for_example = False
         if infer_shape:
             oracle_sample_kwargs = structured_sample_kwargs(moved)
+            stage_start = log_stage("oracle_sample:start")
             if inference_mode == "greedy":
                 oracle_generated, oracle_log_probs = model._sample_with_scores(
                     **oracle_sample_kwargs,
@@ -982,6 +1003,8 @@ def evaluate_structured(
                     early_stop_entropy=early_stop_entropy,
                     early_stop_patience=early_stop_patience,
                 )
+            log_stage("oracle_sample:done", stage_start)
+            stage_start = log_stage("oracle_metrics:start")
             oracle_prediction_metrics = structured_prediction_metrics(
                 oracle_generated,
                 expected,
@@ -989,6 +1012,8 @@ def evaluate_structured(
                 oracle_log_probs,
             )
             oracle_exact_for_example = bool(oracle_prediction_metrics["exact"])
+            log_stage("oracle_metrics:done", stage_start)
+            stage_start = log_stage("shape_candidates:start")
             shape_candidates = propose_mixed_shape_candidates(
                 model,
                 moved,
@@ -999,6 +1024,19 @@ def evaluate_structured(
             candidate_shape_set = {
                 (candidate.height, candidate.width) for candidate in shape_candidates
             }
+            shape_details = "shapes=" + ",".join(
+                f"{candidate.height}x{candidate.width}:{candidate.source}"
+                for candidate in shape_candidates
+            )
+            log_stage("shape_candidates:done", stage_start, shape_details)
+            stage_start = log_stage(
+                "candidate_sampling:start",
+                details=(
+                    f"candidate_shapes={len(shape_candidates)} "
+                    f"mode={inference_mode} num_candidates={num_candidates} "
+                    f"sample_steps={sample_steps}"
+                ),
+            )
             structured_candidates = model.sample_candidates(
                 **structured_context_kwargs(moved),
                 candidate_shapes=shape_candidates,
@@ -1024,6 +1062,8 @@ def evaluate_structured(
             )
             if not structured_candidates:
                 raise RuntimeError(f"no structured candidates generated for {task_id}")
+            log_stage("candidate_sampling:done", stage_start)
+            stage_start = log_stage("candidate_rerank:start")
             candidate_heuristics = {
                 id(candidate): arc_heuristic_candidate_score(candidate, moved)
                 for candidate in structured_candidates
@@ -1038,9 +1078,15 @@ def evaluate_structured(
                     temporal_consistency_weight=temporal_consistency_weight,
                 ),
             )
+            log_stage(
+                "candidate_rerank:done",
+                stage_start,
+                details=f"selected={selected.height}x{selected.width}",
+            )
             predicted_shape = (selected.height, selected.width)
             generated_values = selected.sample
             generated_log_probs = selected.token_log_probs
+            stage_start = log_stage("prediction_metrics:start")
             prediction_metrics = structured_prediction_metrics_for_shapes(
                 generated_values,
                 expected[0],
@@ -1048,7 +1094,9 @@ def evaluate_structured(
                 expected_shape,
                 generated_log_probs,
             )
+            log_stage("prediction_metrics:done", stage_start)
             if dump_candidates:
+                stage_start = log_stage("candidate_report:start")
                 candidate_rows = [
                     _candidate_report_row(
                         candidate,
@@ -1059,8 +1107,10 @@ def evaluate_structured(
                     )
                     for candidate in structured_candidates
                 ]
+                log_stage("candidate_report:done", stage_start)
         else:
             sample_kwargs = structured_sample_kwargs(moved)
+            stage_start = log_stage("sample:start")
             if inference_mode == "greedy":
                 trace = model.sample_with_trace(
                     **sample_kwargs,
@@ -1103,9 +1153,11 @@ def evaluate_structured(
                     early_stop_entropy=early_stop_entropy,
                     early_stop_patience=early_stop_patience,
                 )
+            log_stage("sample:done", stage_start)
             predicted_shape = expected_shape
             generated_values = generated[0]
             generated_log_probs = token_log_probs[0]
+            stage_start = log_stage("prediction_metrics:start")
             prediction_metrics = structured_prediction_metrics(
                 generated,
                 expected,
@@ -1113,6 +1165,7 @@ def evaluate_structured(
                 token_log_probs,
             )
             oracle_exact_for_example = bool(prediction_metrics["exact"])
+            log_stage("prediction_metrics:done", stage_start)
 
         shape_match = predicted_shape == expected_shape
         shape_topk_match = expected_shape in candidate_shape_set
@@ -1145,7 +1198,9 @@ def evaluate_structured(
         examples.append(example_row)
         processed = len(examples)
         if eval_report is not None:
+            stage_start = log_stage("write_report:start")
             _write_json(eval_report, report_payload(current_summary(processed), idx + 1 == total))
+            log_stage("write_report:done", stage_start)
         if eval_progress_every > 0 and (
             idx == eval_start_index
             or (idx - eval_start_index + 1) % eval_progress_every == 0
@@ -1169,6 +1224,7 @@ def evaluate_structured(
                 flush=True,
             )
         if debug_dir is not None and idx < debug_limit:
+            stage_start = log_stage("write_debug:start")
             debug_payload = _structured_debug_payload(
                 task_id=task_id,
                 expected_shape=expected_shape,
@@ -1181,6 +1237,8 @@ def evaluate_structured(
                 candidates=candidate_rows if dump_candidates else None,
             )
             _write_json(debug_dir / f"{idx:04d}_{task_id}.json", debug_payload)
+            log_stage("write_debug:done", stage_start)
+        log_stage("done", example_start)
 
     model.train()
     summary = current_summary(len(examples))
@@ -1352,6 +1410,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Comma-separated structured eval indices or ranges to skip, e.g. '6' or '6,10-12'.",
+    )
+    parser.add_argument(
+        "--eval-stage-log",
+        action="store_true",
+        help="Print structured eval stage timings for each example.",
     )
     parser.add_argument("--debug-dir", type=Path, default=None)
     parser.add_argument("--debug-limit", type=int, default=5)
@@ -1575,6 +1638,7 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
             eval_progress_every=args.eval_progress_every,
             eval_start_index=args.eval_start_index,
             eval_skip_indices=_parse_index_set(args.eval_skip_indices),
+            eval_stage_log=args.eval_stage_log,
         )
         print(
             f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
@@ -1712,6 +1776,7 @@ def run_training_loop(
                     eval_progress_every=args.eval_progress_every,
                     eval_start_index=args.eval_start_index,
                     eval_skip_indices=_parse_index_set(args.eval_skip_indices),
+                    eval_stage_log=args.eval_stage_log,
                 )
             else:
                 metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
