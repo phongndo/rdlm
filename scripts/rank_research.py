@@ -61,6 +61,23 @@ PENALTY_TERMS = {
     "70b": -3,
 }
 
+NOISY_DOMAIN_TERMS = (
+    "medical",
+    "medicine",
+    "clinical",
+    "biomedical",
+    "healthcare",
+    "patient",
+    "med-palm",
+    "materials discovery",
+    "materials science",
+    "molecular",
+    "drug discovery",
+    "chemistry",
+    "crystal",
+    "protein",
+)
+
 
 def text_of(paper: dict[str, Any]) -> str:
     return "\n".join(
@@ -147,7 +164,22 @@ def load_papers(path: Path) -> list[dict[str, Any]]:
     return papers
 
 
-def write_markdown(papers: list[dict[str, Any]], out: Path, deep_top_n: int) -> None:
+def is_noisy_domain(paper: dict[str, Any]) -> bool:
+    text = text_of(paper)
+    return any(has_term(text, term) for term in NOISY_DOMAIN_TERMS)
+
+
+def write_markdown(
+    papers: list[dict[str, Any]],
+    out: Path,
+    deep_top_n: int,
+    exclude_noisy_domains: bool,
+) -> None:
+    original_count = len(papers)
+    if exclude_noisy_domains:
+        papers = [paper for paper in papers if not is_noisy_domain(paper)]
+    filtered_count = original_count - len(papers)
+
     scored = []
     for paper in papers:
         score, parts = score_paper(paper)
@@ -167,7 +199,10 @@ def write_markdown(papers: list[dict[str, Any]], out: Path, deep_top_n: int) -> 
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:
         f.write("# Ranked Research Bibliography for RDLM\n\n")
-        f.write(f"Total gathered papers: **{len(scored)}**.\n\n")
+        f.write(f"Total gathered papers after filtering: **{len(scored)}**.\n")
+        if exclude_noisy_domains:
+            f.write(f"Filtered noisy medicine/materials/domain-specific papers: **{filtered_count}**.\n")
+        f.write("\n")
         f.write("## Ranking formula\n\n")
         f.write(
             "Keyword score over title/abstract/query metadata: direct code relevance + topic coverage "
@@ -216,9 +251,19 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=Path("artifacts/research/raw_papers.jsonl"))
     parser.add_argument("--out", type=Path, default=Path("artifacts/research/ranked_papers.md"))
     parser.add_argument("--deep-top-n", type=int, default=75)
+    parser.add_argument(
+        "--include-noisy-domains",
+        action="store_true",
+        help="Keep medicine/materials/chemistry papers instead of filtering them from ranked outputs.",
+    )
     args = parser.parse_args()
     papers = load_papers(args.input)
-    write_markdown(papers, args.out, args.deep_top_n)
+    write_markdown(
+        papers,
+        args.out,
+        args.deep_top_n,
+        exclude_noisy_domains=not args.include_noisy_domains,
+    )
     return 0
 
 

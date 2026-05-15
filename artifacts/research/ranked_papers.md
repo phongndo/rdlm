@@ -1,6 +1,7 @@
 # Ranked Research Bibliography for RDLM
 
-Total gathered papers: **126**.
+Total gathered papers after filtering: **116**.
+Filtered noisy medicine/materials/domain-specific papers: **10**.
 
 ## Ranking formula
 
@@ -8,9 +9,9 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 
 ## Theme counts
 
-- **Recursive / iterative reasoning**: 73
-- **Small-model reasoning**: 42
-- **Diffusion / denoising LM**: 7
+- **Recursive / iterative reasoning**: 68
+- **Small-model reasoning**: 39
+- **Diffusion / denoising LM**: 5
 - **ARC / program / symbolic reasoning**: 3
 - **Curriculum / synthetic data / RL**: 1
 
@@ -115,18 +116,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 10. Artificial Intelligence for Materials Discovery, Development, and Optimization
-- **Score**: 33.12
-- **Theme**: Recursive / iterative reasoning
-- **Authors**: Benediktus Madika et al.
-- **Year / venue**: 2025 / ACS Nano
-- **URL**: https://openalex.org/W4412654790
-- **Topics**: recursive reasoning, curriculum/synthetic/RL, mechanistic interpretability
-- **Factual summary seed**: This review highlights the recent transformative impact of artificial intelligence (AI), machine learning (ML), and deep learning (DL) on materials science, emphasizing their applications in materials discovery, development, and optimization. AI-driven methods have revolutionize…
-- **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
-- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
-
-### 11. Dynamical Systems Theory Behind a Hierarchical Reasoning Model
+### 10. Dynamical Systems Theory Behind a Hierarchical Reasoning Model
 - **Score**: 33.1
 - **Theme**: ARC / program / symbolic reasoning
 - **Authors**: Vasiliy A. Es'kin, Mikhail E. Smorkalov
@@ -137,7 +127,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 12. A Survey of Large Language Models
+### 11. A Survey of Large Language Models
 - **Score**: 32.6
 - **Theme**: Small-model reasoning
 - **Authors**: Wayne Xin Zhao et al.
@@ -148,7 +138,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 13. Beyond Test-Time Compute Strategies: Advocating Energy-per-Token in LLM Inference
+### 12. Beyond Test-Time Compute Strategies: Advocating Energy-per-Token in LLM Inference
 - **Score**: 32.4
 - **Theme**: Small-model reasoning
 - **Authors**: Pascal Wilhelm, Thorsten Wittkopp, Odej Kao
@@ -159,7 +149,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to low-risk inference-time reranking, voting, and extra-compute allocation.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 14. Neural-Symbolic Collaborative Distillation: Advancing Small Language Models for Complex Reasoning Tasks
+### 13. Neural-Symbolic Collaborative Distillation: Advancing Small Language Models for Complex Reasoning Tasks
 - **Score**: 32.11
 - **Theme**: Small-model reasoning
 - **Authors**: Huanxuan Liao et al.
@@ -170,18 +160,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Directly relevant to ARC evaluation, object/grid priors, or candidate verification.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 15. Toward expert-level medical question answering with large language models
-- **Score**: 31.8
-- **Theme**: Recursive / iterative reasoning
-- **Authors**: K. K. Singhal et al.
-- **Year / venue**: 2025 / Nature Medicine
-- **URL**: https://openalex.org/W4406152279
-- **Topics**: curriculum/synthetic/RL, recursive reasoning
-- **Factual summary seed**: Large language models (LLMs) have shown promise in medical question answering, with Med-PaLM being the first to exceed a 'passing' score in United States Medical Licensing Examination style questions. However, challenges remain in long-form medical question answering and handlin…
-- **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
-- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
-
-### 16. PhyT2V: LLM-Guided Iterative Self-Refinement for Physics-Grounded Text-to-Video Generation
+### 14. PhyT2V: LLM-Guided Iterative Self-Refinement for Physics-Grounded Text-to-Video Generation
 - **Score**: 30.81
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Qiyao Xue et al.
@@ -192,7 +171,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to RDLM masking schedules, denoising objectives, and decoding trajectories.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 17. Simplified and Generalized Masked Diffusion for Discrete Data
+### 15. Simplified and Generalized Masked Diffusion for Discrete Data
 - **Score**: 30.81
 - **Theme**: Diffusion / denoising LM
 - **Authors**: Jiaxin Shi et al.
@@ -203,7 +182,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to RDLM masking schedules, denoising objectives, and decoding trajectories.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 18. A Comprehensive Evaluation of Transformer-Based Question Answering Models and RAG-Enhanced Design
+### 16. A Comprehensive Evaluation of Transformer-Based Question Answering Models and RAG-Enhanced Design
 - **Score**: 30.8
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Zichen Zhang et al.
@@ -214,7 +193,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 19. Revisiting Large Language Models as Zero-shot Relation Extractors
+### 17. Revisiting Large Language Models as Zero-shot Relation Extractors
 - **Score**: 30.57
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Guozheng Li, Peng Wang, Wenjun Ke
@@ -225,7 +204,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 20. Pre-train, Prompt, and Predict: A Systematic Survey of Prompting Methods in Natural Language Processing
+### 18. Pre-train, Prompt, and Predict: A Systematic Survey of Prompting Methods in Natural Language Processing
 - **Score**: 30.4
 - **Theme**: Small-model reasoning
 - **Authors**: Pengfei Liu et al.
@@ -236,7 +215,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 21. Image Super-Resolution Via Iterative Refinement
+### 19. Image Super-Resolution Via Iterative Refinement
 - **Score**: 30.4
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Chitwan Saharia et al.
@@ -247,7 +226,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to RDLM masking schedules, denoising objectives, and decoding trajectories.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 22. MAGDi: Structured Distillation of Multi-Agent Interaction Graphs Improves Reasoning in Smaller Language Models
+### 20. MAGDi: Structured Distillation of Multi-Agent Interaction Graphs Improves Reasoning in Smaller Language Models
 - **Score**: 30.4
 - **Theme**: Small-model reasoning
 - **Authors**: Justin Chih-Yao Chen et al.
@@ -258,7 +237,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to low-risk inference-time reranking, voting, and extra-compute allocation.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 23. Rewarding Progress: Scaling Automated Process Verifiers for LLM Reasoning
+### 21. Rewarding Progress: Scaling Automated Process Verifiers for LLM Reasoning
 - **Score**: 30.31
 - **Theme**: Small-model reasoning
 - **Authors**: Amrith Setlur et al.
@@ -269,7 +248,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to low-risk inference-time reranking, voting, and extra-compute allocation.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 24. Can Small Language Models Help Large Language Models Reason Better?: LM-Guided Chain-of-Thought
+### 22. Can Small Language Models Help Large Language Models Reason Better?: LM-Guided Chain-of-Thought
 - **Score**: 29.9
 - **Theme**: Small-model reasoning
 - **Authors**: Jooyoung Lee et al.
@@ -280,18 +259,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 25. Towards Expert-Level Medical Question Answering with Large Language Models
-- **Score**: 29.77
-- **Theme**: Recursive / iterative reasoning
-- **Authors**: Karan Singhal et al.
-- **Year / venue**: 2023 / arXiv (Cornell University)
-- **URL**: https://openalex.org/W4377009978
-- **Topics**: curriculum/synthetic/RL, recursive reasoning
-- **Factual summary seed**: Recent artificial intelligence (AI) systems have reached milestones in "grand challenges" ranging from Go to protein-folding. The capability to retrieve medical knowledge, reason over it, and answer medical questions comparably to physicians has long been viewed as one such gran…
-- **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
-- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
-
-### 26. Diffutron: A Masked Diffusion Language Model for Turkish Language
+### 23. Diffutron: A Masked Diffusion Language Model for Turkish Language
 - **Score**: 29.6
 - **Theme**: Diffusion / denoising LM
 - **Authors**: Şuayp Talha Kocabay, Talha Rüzgar Akkuş
@@ -302,7 +270,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to RDLM masking schedules, denoising objectives, and decoding trajectories.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 27. A survey on large language model based autonomous agents
+### 24. A survey on large language model based autonomous agents
 - **Score**: 29.5
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Lei Wang et al.
@@ -313,7 +281,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 28. Object Detection in 20 Years: A Survey
+### 25. Object Detection in 20 Years: A Survey
 - **Score**: 29.5
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Zhengxia Zou et al.
@@ -324,7 +292,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 29. Embodied Reasoning with Self-Feedback
+### 26. Embodied Reasoning with Self-Feedback
 - **Score**: 29.43
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Pranav Kak, Sushma Jain
@@ -335,7 +303,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 30. Graph of Thoughts: Solving Elaborate Problems with Large Language Models
+### 27. Graph of Thoughts: Solving Elaborate Problems with Large Language Models
 - **Score**: 29.27
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Maciej Besta et al.
@@ -346,7 +314,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 31. Multi-Hop Knowledge Graph Reasoning with Reward Shaping
+### 28. Multi-Hop Knowledge Graph Reasoning with Reward Shaping
 - **Score**: 29.23
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Xi Lin, Richard Socher, Caiming Xiong
@@ -357,7 +325,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 32. Knowledge-Augmented Reasoning Distillation for Small Language Models in Knowledge-Intensive Tasks
+### 29. Knowledge-Augmented Reasoning Distillation for Small Language Models in Knowledge-Intensive Tasks
 - **Score**: 29.23
 - **Theme**: Small-model reasoning
 - **Authors**: Minki Kang et al.
@@ -368,7 +336,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 33. MizAR 60 for Mizar 50
+### 30. MizAR 60 for Mizar 50
 - **Score**: 29.2
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Jakubův, Jan et al.
@@ -379,7 +347,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 34. One-Shot Autoregressive Generation of Combinatorial Optimization Solutions Based on the Large Language Model Architecture and Learning Algorithms
+### 31. One-Shot Autoregressive Generation of Combinatorial Optimization Solutions Based on the Large Language Model Architecture and Learning Algorithms
 - **Score**: 29.2
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Bishad Ghimire, Ausif Mahmood, Khaled Elleithy
@@ -390,7 +358,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to RDLM masking schedules, denoising objectives, and decoding trajectories.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 35. Distilling Reasoning Capabilities into Smaller Language Models
+### 32. Distilling Reasoning Capabilities into Smaller Language Models
 - **Score**: 29.1
 - **Theme**: Small-model reasoning
 - **Authors**: Kumar Shridhar, Alessandro Stolfo, Mrinmaya Sachan
@@ -401,7 +369,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 36. A Metaverse: Taxonomy, Components, Applications, and Open Challenges
+### 33. A Metaverse: Taxonomy, Components, Applications, and Open Challenges
 - **Score**: 28.9
 - **Theme**: Small-model reasoning
 - **Authors**: Sangmin Park, Young‐Gab Kim
@@ -412,7 +380,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 37. Weight-Tied Adaptive Recursive Vision–Language–Action Transformer for Efficient Multimodal Robotic Control
+### 34. Weight-Tied Adaptive Recursive Vision–Language–Action Transformer for Efficient Multimodal Robotic Control
 - **Score**: 28.6
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Howaida Allam, Inam Ullah Khan
@@ -423,7 +391,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 38. A comprehensive survey on pretrained foundation models: a history from BERT to ChatGPT
+### 35. A comprehensive survey on pretrained foundation models: a history from BERT to ChatGPT
 - **Score**: 28.17
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Ce Zhou et al.
@@ -434,7 +402,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 39. Applications of Artificial Intelligence in Transport: An Overview
+### 36. Applications of Artificial Intelligence in Transport: An Overview
 - **Score**: 28.0
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Rusul Abduljabbar et al.
@@ -445,7 +413,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 40. Visual CoT: Advancing Multi-Modal Language Models with a Comprehensive Dataset and Benchmark for Chain-of-Thought Reasoning
+### 37. Visual CoT: Advancing Multi-Modal Language Models with a Comprehensive Dataset and Benchmark for Chain-of-Thought Reasoning
 - **Score**: 27.88
 - **Theme**: Small-model reasoning
 - **Authors**: Hao Shao et al.
@@ -456,7 +424,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 41. Uncovering Graph Reasoning in Decoder-only Transformers with Circuit Tracing
+### 38. Uncovering Graph Reasoning in Decoder-only Transformers with Circuit Tracing
 - **Score**: 27.8
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Xinnan Dai et al.
@@ -467,7 +435,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 42. Recurrent Memory Transformer
+### 39. Recurrent Memory Transformer
 - **Score**: 27.69
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Aydar Bulatov, Yuri Kuratov, Mikhail Burtsev
@@ -478,7 +446,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 43. Deep multiagent reinforcement learning: challenges and directions
+### 40. Deep multiagent reinforcement learning: challenges and directions
 - **Score**: 27.56
 - **Theme**: Curriculum / synthetic data / RL
 - **Authors**: Annie Wong et al.
@@ -489,7 +457,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 44. Mastering Long-Context Multi-Task Reasoning with Transformers and Recurrent Memory
+### 41. Mastering Long-Context Multi-Task Reasoning with Transformers and Recurrent Memory
 - **Score**: 27.4
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Aleksandr Bulatov, Yuri Kuratov, Mikhail Burtsev
@@ -500,7 +468,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 45. Distilling mathematical reasoning capabilities into Small Language Models
+### 42. Distilling mathematical reasoning capabilities into Small Language Models
 - **Score**: 27.34
 - **Theme**: Small-model reasoning
 - **Authors**: Xunyu Zhu et al.
@@ -511,7 +479,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 46. Proceedings of the 28th International Conference on Computational Linguistics
+### 43. Proceedings of the 28th International Conference on Computational Linguistics
 - **Score**: 27.3
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Xiaodan Zhu et al.
@@ -522,7 +490,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 47. Iterative Scene Graph Generation
+### 44. Iterative Scene Graph Generation
 - **Score**: 27.14
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Siddhesh Khandelwal, Leonid Sigal
@@ -533,7 +501,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 48. Reasoning with Latent Structure Refinement for Document-Level Relation Extraction
+### 45. Reasoning with Latent Structure Refinement for Document-Level Relation Extraction
 - **Score**: 26.73
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Guoshun Nan et al.
@@ -544,7 +512,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 49. Transformers in Vision: A Survey
+### 46. Transformers in Vision: A Survey
 - **Score**: 26.7
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Salman Khan et al.
@@ -555,7 +523,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 50. Group-Wise Semantic Mining for Weakly Supervised Semantic Segmentation
+### 47. Group-Wise Semantic Mining for Weakly Supervised Semantic Segmentation
 - **Score**: 26.44
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Xueyi Li et al.
@@ -566,7 +534,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 51. Learning richness modulates equality reasoning in neural networks
+### 48. Learning richness modulates equality reasoning in neural networks
 - **Score**: 26.3
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: William L. Tong, Cengiz Pehlevan
@@ -577,7 +545,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 52. Distributed Cognition for AI-supported Remote Operations: Challenges and Research Directions
+### 49. Distributed Cognition for AI-supported Remote Operations: Challenges and Research Directions
 - **Score**: 26.3
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Rune Møberg Jacobsen et al.
@@ -588,7 +556,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 53. Aligning Large and Small Language Models via Chain-of-Thought Reasoning
+### 50. Aligning Large and Small Language Models via Chain-of-Thought Reasoning
 - **Score**: 26.18
 - **Theme**: Small-model reasoning
 - **Authors**: Leonardo Ranaldi, André Victor Lucci Freitas, André Freitas
@@ -599,7 +567,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 54. A foundational model for joint sequence-function multi-species modeling at scale for long-range genomic prediction
+### 51. A foundational model for joint sequence-function multi-species modeling at scale for long-range genomic prediction
 - **Score**: 26.16
 - **Theme**: Diffusion / denoising LM
 - **Authors**: Sam Boshar et al.
@@ -610,7 +578,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to RDLM masking schedules, denoising objectives, and decoding trajectories.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 55. TrTr-CMR: Cross-Modal Reasoning Dual Transformer for Remote Sensing Image Captioning
+### 52. TrTr-CMR: Cross-Modal Reasoning Dual Transformer for Remote Sensing Image Captioning
 - **Score**: 26.14
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Yinan Wu et al.
@@ -621,7 +589,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 56. Enhancing Small Language Models via ChatGPT and Dataset Augmentation
+### 53. Enhancing Small Language Models via ChatGPT and Dataset Augmentation
 - **Score**: 26.1
 - **Theme**: Small-model reasoning
 - **Authors**: Tom Pieper et al.
@@ -632,7 +600,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 57. Enhancing the Mathematical Reasoning Ability of Small Language Models through Thought Chain Distillation
+### 54. Enhancing the Mathematical Reasoning Ability of Small Language Models through Thought Chain Distillation
 - **Score**: 26.1
 - **Theme**: Small-model reasoning
 - **Authors**: Xiangyu Shu
@@ -643,7 +611,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 58. D-COT: Disciplined Chain-of-Thought Learning for Efficient Reasoning in Small Language Models
+### 55. D-COT: Disciplined Chain-of-Thought Learning for Efficient Reasoning in Small Language Models
 - **Score**: 26.1
 - **Theme**: Small-model reasoning
 - **Authors**: Shunsuke Ubukata
@@ -654,18 +622,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 59. Small language models learn enhanced reasoning skills from medical textbooks
-- **Score**: 25.89
-- **Theme**: Small-model reasoning
-- **Authors**: Hyunjae Kim et al.
-- **Year / venue**: 2025 / npj Digital Medicine
-- **URL**: https://openalex.org/W4410028173
-- **Topics**: neuro-symbolic/programs, small language models, small models
-- **Factual summary seed**: Small language models (SLM) offer promise for medical applications by addressing the privacy and hardware constraints of large language models; however, their limited parameters (often fewer than ten billion) hinder multi-step reasoning for complex medical tasks. This study pres…
-- **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
-- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
-
-### 60. CaDCR: An Efficient Cascaded Dynamic Collaborative Reasoning Framework for Intelligent Recognition Systems
+### 56. CaDCR: An Efficient Cascaded Dynamic Collaborative Reasoning Framework for Intelligent Recognition Systems
 - **Score**: 25.7
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Bowen Li et al.
@@ -676,7 +633,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 61. ThinkSLM: Towards Reasoning in Small Language Models
+### 57. ThinkSLM: Towards Reasoning in Small Language Models
 - **Score**: 25.61
 - **Theme**: Small-model reasoning
 - **Authors**: Gaurav Srivastava, Shuxiang Cao, Xuan Wang
@@ -687,7 +644,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 62. Simple and Effective Masked Diffusion Language Models
+### 58. Simple and Effective Masked Diffusion Language Models
 - **Score**: 25.54
 - **Theme**: Diffusion / denoising LM
 - **Authors**: Marianne Arriola et al.
@@ -698,7 +655,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to RDLM masking schedules, denoising objectives, and decoding trajectories.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 63. Teaching Small Language Models Reasoning through Counterfactual Distillation
+### 59. Teaching Small Language Models Reasoning through Counterfactual Distillation
 - **Score**: 24.9
 - **Theme**: Small-model reasoning
 - **Authors**: Tao Feng et al.
@@ -709,7 +666,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 64. Cognitive Dissonance Artificial Intelligence (CD-AI): The Mind at War with Itself. Harnessing Discomfort to Sharpen Critical Thinking
+### 60. Cognitive Dissonance Artificial Intelligence (CD-AI): The Mind at War with Itself. Harnessing Discomfort to Sharpen Critical Thinking
 - **Score**: 24.8
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Delia Deliu
@@ -720,18 +677,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 65. Integrating semantic retrieval and chain-of-thought reasoning in small language models for SNOMED CT normalization
-- **Score**: 24.6
-- **Theme**: Small-model reasoning
-- **Authors**: P. López-Úbeda, T. Martín-Noguerol, A. Luna
-- **Year / venue**: 2026 / Int. J. Medical Informatics
-- **URL**: https://www.semanticscholar.org/paper/83199c0c53304c6f68006d918b20eeefad863e5e
-- **Topics**: small models, latent/CoT reasoning, neuro-symbolic/programs, small language models
-- **Factual summary seed**: BACKGROUND AND OBJECTIVE Breast lesion biopsy assessment generates a high volume of pathology reports, posing a significant workload for pathologists. Standardized coding systems such as SNOMED CT Morphological codes enable consistent documentation, facilitate accurate data shar…
-- **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
-- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
-
-### 66. Asynchronous Blockchain Recording for Chain-of-Thought Tracing in Small Language Models
+### 61. Asynchronous Blockchain Recording for Chain-of-Thought Tracing in Small Language Models
 - **Score**: 24.6
 - **Theme**: Small-model reasoning
 - **Authors**: Sungmoon Park et al.
@@ -742,7 +688,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 67. Multimodal Transformer With Multi-View Visual Representation for Image Captioning
+### 62. Multimodal Transformer With Multi-View Visual Representation for Image Captioning
 - **Score**: 24.47
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Jun Yu et al.
@@ -753,7 +699,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 68. Geometric Point Attention Transformer for 3D Shape Reassembly
+### 63. Geometric Point Attention Transformer for 3D Shape Reassembly
 - **Score**: 24.31
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Jiahan Li et al.
@@ -764,7 +710,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 69. Predicting concentration levels of air pollutants by transfer learning and recurrent neural network
+### 64. Predicting concentration levels of air pollutants by transfer learning and recurrent neural network
 - **Score**: 24.3
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Iat Hang Fong et al.
@@ -775,7 +721,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 70. Hierarchical Reasoning Models: Perspectives and Misconceptions
+### 65. Hierarchical Reasoning Models: Perspectives and Misconceptions
 - **Score**: 24.3
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Renee Ge, Qianli Liao, Tomaso Poggio
@@ -786,18 +732,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 71. Steering Masked Discrete Diffusion Models via Discrete Denoising Posterior Prediction
-- **Score**: 23.93
-- **Theme**: Diffusion / denoising LM
-- **Authors**: Jarrid Rector-Brooks et al.
-- **Year / venue**: 2024 / arXiv (Cornell University)
-- **URL**: https://openalex.org/W4403365366
-- **Topics**: diffusion LM, curriculum/synthetic/RL, diffusion text
-- **Factual summary seed**: Generative modeling of discrete data underlies important applications spanning text-based agents like ChatGPT to the design of the very building blocks of life in protein sequences. However, application domains need to exert control over the generated data by steering the genera…
-- **Implementation relevance**: Relevant to RDLM masking schedules, denoising objectives, and decoding trajectories.
-- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
-
-### 72. Less is More: Recursive Reasoning with Tiny Networks
+### 66. Less is More: Recursive Reasoning with Tiny Networks
 - **Score**: 23.9
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Alexia Jolicoeur‐Martineau
@@ -808,7 +743,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 73. Intelligent Interaction Strategies for Context-Aware Cognitive Augmentation
+### 67. Intelligent Interaction Strategies for Context-Aware Cognitive Augmentation
 - **Score**: 23.8
 - **Theme**: Recursive / iterative reasoning
 - **Authors**:  Xiangrong et al.
@@ -819,18 +754,7 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
-### 74. Chain of Thought Strategy for Smaller LLMs for Medical Reasoning
-- **Score**: 23.73
-- **Theme**: Small-model reasoning
-- **Authors**: Hurmat Ali Shah, Mowafa Househ
-- **Year / venue**: 2025 / Studies in health technology and informatics
-- **URL**: https://openalex.org/W4410447959
-- **Topics**: latent/CoT reasoning, mechanistic interpretability, small language models
-- **Factual summary seed**: This paper investigates the application of Chain of Thought (CoT) reasoning to enhance the performance of smaller language models in medical question-answering tasks. By leveraging CoT prompting strategies, we aim to improve model accuracy and interpretability, especially in res…
-- **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
-- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
-
-### 75. Explaining Deep Neural Networks and Beyond: A Review of Methods and Applications
+### 68. Explaining Deep Neural Networks and Beyond: A Review of Methods and Applications
 - **Score**: 23.6
 - **Theme**: Recursive / iterative reasoning
 - **Authors**: Wojciech Samek et al.
@@ -838,6 +762,83 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **URL**: https://openalex.org/W3132191748
 - **Topics**: mechanistic interpretability, recursive reasoning
 - **Factual summary seed**: With the broader and highly successful usage of machine learning (ML) in industry and the sciences, there has been a growing demand for explainable artificial intelligence (XAI). Interpretability and explanation methods for gaining a better understanding of the problem-solving a…
+- **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
+- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
+
+### 69. DDCoT: Duty-Distinct Chain-of-Thought Prompting for Multimodal Reasoning in Language Models
+- **Score**: 23.31
+- **Theme**: Small-model reasoning
+- **Authors**: Zheng Ge et al.
+- **Year / venue**: 2023 / arXiv (Cornell University)
+- **URL**: https://openalex.org/W4387994822
+- **Topics**: small models, latent/CoT reasoning, small language models
+- **Factual summary seed**: A long-standing goal of AI systems is to perform complex multimodal reasoning like humans. Recently, large language models (LLMs) have made remarkable strides in such multi-step reasoning on the language modality solely by leveraging the chain of thought (CoT) to mimic human thi…
+- **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
+- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
+
+### 70. Shots and Boosters: Exploring the Use of Combined Prebunking Interventions to Raise Critical Thinking and Create Long-Term Protection Against Misinformation
+- **Score**: 23.3
+- **Theme**: Recursive / iterative reasoning
+- **Authors**: Huiyun Tang, Anastasia Sergeeva
+- **Year / venue**: 2025 / arXiv
+- **URL**: http://arxiv.org/abs/2505.07486v1
+- **Topics**: recursive reasoning
+- **Factual summary seed**: The problem of how to effectively mitigate the flow of misinformation remains a significant challenge. The classical approach to this is public disapproval of claims or "debunking." The approach is still widely used on social media, but it has some severe limitations in terms of…
+- **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
+- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
+
+### 71. Navigating the State of Cognitive Flow: Context-Aware AI Interventions for Effective Reasoning Support
+- **Score**: 23.3
+- **Theme**: Recursive / iterative reasoning
+- **Authors**: Dinithi Dissanayake, Suranga Nanayakkara
+- **Year / venue**: 2025 / arXiv
+- **URL**: http://arxiv.org/abs/2504.16021v1
+- **Topics**: recursive reasoning
+- **Factual summary seed**: Flow theory describes an optimal cognitive state where individuals experience deep focus and intrinsic motivation when a task's difficulty aligns with their skill level. In AI-augmented reasoning, interventions that disrupt the state of cognitive flow can hinder rather than enha…
+- **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
+- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
+
+### 72. Optimizing Small Language Models for NL2SQL via Chain-of-Thought Fine-Tuning
+- **Score**: 23.0
+- **Theme**: Small-model reasoning
+- **Authors**: Anshul Solanki et al.
+- **Year / venue**: 2026 / n/a
+- **URL**: https://www.semanticscholar.org/paper/3cf374383750f3495de85509261b7a24f05124fc
+- **Topics**: small models, latent/CoT reasoning, small language models
+- **Factual summary seed**: Translating Natural Language to SQL (NL2SQL) remains a critical bottleneck for democratization of data in enterprises. Although Large Language Models (LLMs) like Gemini 2.5 and other LLMs have demonstrated impressive zero-shot capabilities, their high inference costs limit deplo…
+- **Implementation relevance**: Relevant to keeping model size/training cost low while improving reasoning quality.
+- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
+
+### 73. Reasoning Aware Self-Consistency: Leveraging Reasoning Paths for Efficient LLM Sampling
+- **Score**: 22.81
+- **Theme**: Small-model reasoning
+- **Authors**: Guoyang Wan et al.
+- **Year / venue**: 2024 / arXiv (Cornell University)
+- **URL**: https://openalex.org/W4403556398
+- **Topics**: small models, test-time compute, curriculum/synthetic/RL, small language models
+- **Factual summary seed**: Self-Consistency mitigates hallucinations in Large Language Models (LLMs) by sampling multiple reasoning paths,but it lacks a systematic approach to determine the optimal number of samples or select the most faithful rationale. To address this limitation, we introduce Reasoning-…
+- **Implementation relevance**: Relevant to low-risk inference-time reranking, voting, and extra-compute allocation.
+- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
+
+### 74. Enhancing Critical Thinking with AI: A Tailored Warning System for RAG Models
+- **Score**: 22.3
+- **Theme**: Recursive / iterative reasoning
+- **Authors**: Xuyang Zhu, Sejoon Chang, Andrew Kuik
+- **Year / venue**: 2025 / arXiv
+- **URL**: http://arxiv.org/abs/2504.16883v1
+- **Topics**: recursive reasoning
+- **Factual summary seed**: Retrieval-Augmented Generation (RAG) systems offer a powerful approach to enhancing large language model (LLM) outputs by incorporating fact-checked, contextually relevant information. However, fairness and reliability concerns persist, as hallucinations can emerge at both the r…
+- **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
+- **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
+
+### 75. A Review of Artificial Intelligence (AI) in Education from 2010 to 2020
+- **Score**: 22.1
+- **Theme**: Recursive / iterative reasoning
+- **Authors**: Xuesong Zhai et al.
+- **Year / venue**: 2021 / Complexity
+- **URL**: https://openalex.org/W3156614709
+- **Topics**: recursive reasoning
+- **Factual summary seed**: This study provided a content analysis of studies aiming to disclose how artificial intelligence (AI) has been applied to the education sector and explore the potential research trends and challenges of AI in education. A total of 100 papers including 63 empirical papers (74 stu…
 - **Implementation relevance**: Relevant to TRM-style recurrent refinement and adaptive computation depth.
 - **Deep-synthesis fields to fill**: method; architecture; training objective; benchmark; result; implementation hook; risks.
 
@@ -859,8 +860,6 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Diffutron: A Masked Diffusion Language Model for Turkish Language** (2026, score=29.6, cites=0) — Şuayp Talha Kocabay, Talha Rüzgar Akkuş. https://openalex.org/W7140346153
 - **A foundational model for joint sequence-function multi-species modeling at scale for long-range genomic prediction** (2025, score=26.16, cites=8) — Sam Boshar et al.. https://openalex.org/W7117243582
 - **Simple and Effective Masked Diffusion Language Models** (2024, score=25.54, cites=6) — Marianne Arriola et al.. https://openalex.org/W4415800813
-- **Steering Masked Discrete Diffusion Models via Discrete Denoising Posterior Prediction** (2024, score=23.93, cites=2) — Jarrid Rector-Brooks et al.. https://openalex.org/W4403365366
-- **Structure Language Models for Protein Conformation Generation** (2024, score=23.1, cites=4) — Jiarui Lu et al.. https://openalex.org/W4404306486
 - **CodeDiffuSe: A masked diffusion framework for structure-aware code completion and repair** (2025, score=20.23, cites=2) — Aytuğ Onan, Hesham Alhumyani. https://openalex.org/W4414466491
 
 ### Recursive / iterative reasoning
@@ -871,13 +870,10 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Mamba: Linear-Time Sequence Modeling with Selective State Spaces** (2023, score=41.2, cites=984) — Albert Gu, Tri Dao. https://openalex.org/W4389326242
 - **Multimodal Latent Reasoning via Hierarchical Visual Cues Injection** (2026, score=36.6, cites=0) — Yiming Zhang et al.. https://www.semanticscholar.org/paper/30e7b2338f9fada55addb68e870803975da2bcc2
 - **Virtual Parameter Sharpening: Dynamic Low-Rank Perturbations for Inference-Time Reasoning Enhancement** (2025, score=34.3, cites=0) — Saba Kublashvili. https://www.semanticscholar.org/paper/d1dafc2dba42c7702f31083b4fe3fcc32d762537
-- **Artificial Intelligence for Materials Discovery, Development, and Optimization** (2025, score=33.12, cites=86) — Benediktus Madika et al.. https://openalex.org/W4412654790
-- **Toward expert-level medical question answering with large language models** (2025, score=31.8, cites=647) — K. K. Singhal et al.. https://openalex.org/W4406152279
 - **PhyT2V: LLM-Guided Iterative Self-Refinement for Physics-Grounded Text-to-Video Generation** (2024, score=30.81, cites=58) — Qiyao Xue et al.. https://www.semanticscholar.org/paper/015b1f127b6c31654e3597b75876eed8e445d866
 - **A Comprehensive Evaluation of Transformer-Based Question Answering Models and RAG-Enhanced Design** (2025, score=30.8, cites=0) — Zichen Zhang et al.. https://www.semanticscholar.org/paper/8142b1dbd9163f9e5166da2d25c1c9c1f90c74cb
 - **Revisiting Large Language Models as Zero-shot Relation Extractors** (2023, score=30.57, cites=41) — Guozheng Li, Peng Wang, Wenjun Ke. https://openalex.org/W4389518985
 - **Image Super-Resolution Via Iterative Refinement** (2022, score=30.4, cites=1621) — Chitwan Saharia et al.. https://openalex.org/W3155072588
-- **Towards Expert-Level Medical Question Answering with Large Language Models** (2023, score=29.77, cites=333) — Karan Singhal et al.. https://openalex.org/W4377009978
 - **A survey on large language model based autonomous agents** (2024, score=29.5, cites=1037) — Lei Wang et al.. https://openalex.org/W4393065402
 - **Object Detection in 20 Years: A Survey** (2019, score=29.5, cites=560) — Zhengxia Zou et al.. https://openalex.org/W2944165510
 - **Embodied Reasoning with Self-Feedback** (2024, score=29.43, cites=2) — Pranav Kak, Sushma Jain. https://www.semanticscholar.org/paper/4c2426f47d90839301899a28117c71fae3179b68
@@ -916,7 +912,6 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Demonstrative and non-demonstrative reasoning by analogy** (2008, score=21.5) — Emiliano Ippoliti. http://arxiv.org/abs/0810.5078v1
 - **Value-Decomposition Multi-Agent Actor-Critics** (2021, score=21.46, cites=89) — Jianyu Su, Stephen Adams, Peter A. Beling. https://openalex.org/W3176265013
 - **Recurrent Vision Transformer for Solving Visual Reasoning Problems** (2022, score=21.44, cites=6) — Nicola Messina et al.. https://openalex.org/W3215520958
-- **Inferring on the Intentions of Others by Hierarchical Bayesian Learning** (2014, score=21.09, cites=229) — Andreea O. Diaconescu et al.. https://openalex.org/W2076243793
 - **Dual Accuracy-Quality-Driven Neural Network for Prediction Interval Generation** (2022, score=20.9) — Giorgio Morales, John W. Sheppard. http://arxiv.org/abs/2212.06370v4
 - **Recursive Non-Autoregressive Graph-to-Graph Transformer for Dependency Parsing with Iterative Refinement** (2020, score=20.8) — Alireza Mohammadshahi, James Henderson. http://arxiv.org/abs/2003.13118v2
 - **Natural Language Processing (almost) from Scratch** (2011, score=20.5, cites=3991) — Ronan Collobert et al.. https://openalex.org/W2952230511
@@ -935,7 +930,6 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **A Review on Neural Network Models of Schizophrenia and Autism Spectrum Disorder** (2019, score=14.0) — Pablo Lanillos et al.. http://arxiv.org/abs/1906.10015v2
 - **Masked Conditional Neural Networks for Audio Classification** (2018, score=14.0) — Fady Medhat, David Chesmore, John Robinson. http://arxiv.org/abs/1803.02421v2
 - **A Tutorial about Random Neural Networks in Supervised Learning** (2016, score=14.0) — Sebastián Basterrech, Gerardo Rubino. http://arxiv.org/abs/1609.04846v1
-- **Development of a sensory-neural network for medical diagnosing** (2018, score=12.5) — Igor Grabec, Eva Švegl, Mihael Sok. http://arxiv.org/abs/1807.02477v1
 - **Probabilistic Reasoning via Deep Learning: Neural Association Models** (2016, score=12.5) — Quan Liu et al.. http://arxiv.org/abs/1603.07704v2
 - **How transferable are features in deep neural networks?** (2014, score=12.5) — Jason Yosinski et al.. http://arxiv.org/abs/1411.1792v1
 
@@ -958,12 +952,9 @@ Keyword score over title/abstract/query metadata: direct code relevance + topic 
 - **Enhancing Small Language Models via ChatGPT and Dataset Augmentation** (2024, score=26.1, cites=4) — Tom Pieper et al.. https://openalex.org/W4402646312
 - **Enhancing the Mathematical Reasoning Ability of Small Language Models through Thought Chain Distillation** (2026, score=26.1, cites=0) — Xiangyu Shu. https://www.semanticscholar.org/paper/9a0f314e55a74b854804fd361e86ea5959fc0119
 - **D-COT: Disciplined Chain-of-Thought Learning for Efficient Reasoning in Small Language Models** (2026, score=26.1, cites=0) — Shunsuke Ubukata. https://www.semanticscholar.org/paper/57509859df4cbd21fbc93d95f94787ec96db2913
-- **Small language models learn enhanced reasoning skills from medical textbooks** (2025, score=25.89, cites=33) — Hyunjae Kim et al.. https://openalex.org/W4410028173
 - **ThinkSLM: Towards Reasoning in Small Language Models** (2025, score=25.61, cites=3) — Gaurav Srivastava, Shuxiang Cao, Xuan Wang. https://openalex.org/W4416035376
 - **Teaching Small Language Models Reasoning through Counterfactual Distillation** (2024, score=24.9, cites=1) — Tao Feng et al.. https://openalex.org/W4404784411
-- **Integrating semantic retrieval and chain-of-thought reasoning in small language models for SNOMED CT normalization** (2026, score=24.6, cites=0) — P. López-Úbeda, T. Martín-Noguerol, A. Luna. https://www.semanticscholar.org/paper/83199c0c53304c6f68006d918b20eeefad863e5e
 - **Asynchronous Blockchain Recording for Chain-of-Thought Tracing in Small Language Models** (2026, score=24.6, cites=0) — Sungmoon Park et al.. https://www.semanticscholar.org/paper/a3bfe6163b73686365a07df63082268e2cd1c386
-- **Chain of Thought Strategy for Smaller LLMs for Medical Reasoning** (2025, score=23.73, cites=2) — Hurmat Ali Shah, Mowafa Househ. https://openalex.org/W4410447959
 - **DDCoT: Duty-Distinct Chain-of-Thought Prompting for Multimodal Reasoning in Language Models** (2023, score=23.31, cites=15) — Zheng Ge et al.. https://openalex.org/W4387994822
 - **Optimizing Small Language Models for NL2SQL via Chain-of-Thought Fine-Tuning** (2026, score=23.0, cites=1) — Anshul Solanki et al.. https://www.semanticscholar.org/paper/3cf374383750f3495de85509261b7a24f05124fc
 - **Reasoning Aware Self-Consistency: Leveraging Reasoning Paths for Efficient LLM Sampling** (2024, score=22.81, cites=3) — Guoyang Wan et al.. https://openalex.org/W4403556398
