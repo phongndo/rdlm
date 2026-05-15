@@ -348,8 +348,14 @@ If CUDA/checkpoints/datasets are available, start by measuring already-implement
 ```bash
 uv run python src/rdlm/train_arc.py \
   --arch structured_encoder --eval-only \
+  --dim 512 \
+  --max-examples 2 \
+  --num-latent-refinements 6 \
+  --num-refinement-blocks 2 \
+  --gradient-checkpointing \
+  --use-shape-head --shape-loss-weight 0.1 \
   --eval-dir /home/joey/Programming/arc-agi/data/evaluation \
-  --resume checkpoints/arc_encoder/latest.pt \
+  --resume checkpoints/arc_infer_shape_5cb918d3/step_8000.pt \
   --infer-shape --shape-top-k 5 --dump-candidates \
   --eval-limit 20 --sample-steps 64 \
   --inference-mode ensemble --num-candidates 8 \

@@ -768,9 +768,11 @@ def evaluate_structured(
     early_stop_patience: int = 1,
     arc_heuristic_weight: float = 1.0,
     temporal_consistency_weight: float = 0.0,
+    eval_progress_every: int = 0,
 ) -> dict[str, float]:
     model.eval()
     total = min(limit, len(dataset))
+    eval_start_time = time.time()
     exact = 0
     total_cells = 0
     correct_cells = 0
@@ -1011,6 +1013,23 @@ def evaluate_structured(
         if dump_candidates:
             example_row["candidates"] = candidate_rows
         examples.append(example_row)
+        if eval_progress_every > 0 and (
+            idx == 0 or (idx + 1) % eval_progress_every == 0 or idx + 1 == total
+        ):
+            completed = idx + 1
+            elapsed = time.time() - eval_start_time
+            seconds_per_example = elapsed / completed
+            remaining = max(total - completed, 0)
+            eta = seconds_per_example * remaining
+            rolling_cell_acc = correct_cells / max(total_cells, 1)
+            print(
+                f"[eval] {completed}/{total} "
+                f"elapsed={elapsed:.1f}s eta={eta:.1f}s "
+                f"exact={exact / completed:.3%} "
+                f"cell_acc={rolling_cell_acc:.3%} "
+                f"shape_exact={shape_exact / completed:.3%}",
+                flush=True,
+            )
         if debug_dir is not None and idx < debug_limit:
             debug_payload = _structured_debug_payload(
                 task_id=task_id,
@@ -1237,6 +1256,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-steps", type=int, default=64)
     parser.add_argument("--eval-only", action="store_true")
     parser.add_argument("--eval-report", type=Path, default=None)
+    parser.add_argument(
+        "--eval-progress-every",
+        type=int,
+        default=0,
+        help="Print structured eval progress every N examples. Set to 0 to disable.",
+    )
     parser.add_argument("--debug-dir", type=Path, default=None)
     parser.add_argument("--debug-limit", type=int, default=5)
     parser.add_argument(
@@ -1456,6 +1481,7 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
             early_stop_patience=args.early_stop_patience,
             arc_heuristic_weight=args.arc_heuristic_weight,
             temporal_consistency_weight=args.temporal_consistency_weight,
+            eval_progress_every=args.eval_progress_every,
         )
         print(
             f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
@@ -1590,6 +1616,7 @@ def run_training_loop(
                     early_stop_patience=args.early_stop_patience,
                     arc_heuristic_weight=args.arc_heuristic_weight,
                     temporal_consistency_weight=args.temporal_consistency_weight,
+                    eval_progress_every=args.eval_progress_every,
                 )
             else:
                 metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
