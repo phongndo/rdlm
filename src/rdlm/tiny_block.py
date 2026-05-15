@@ -37,17 +37,27 @@ def precompute_rope_frequencies(dim: int, max_len: int, theta: float = 10000.0) 
     """Precompute Rotary Position Embedding frequencies.
 
     Args:
-        dim: Head dimension (must be even)
+        dim: Head dimension. Odd dimensions leave the final channel unrotated.
         max_len: Maximum sequence length to precompute for
         theta: RoPE base frequency
     Returns:
         cos, sin: Both of shape (max_len, dim)
     """
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+    pair_dim = (dim // 2) * 2
+    if pair_dim == 0:
+        return torch.ones((max_len, dim)), torch.zeros((max_len, dim))
+    freqs = 1.0 / (theta ** (torch.arange(0, pair_dim, 2).float() / dim))
     positions = torch.arange(max_len).float()
-    angles = torch.outer(positions, freqs)  # (max_len, dim/2)
-    angles = torch.cat([angles, angles], dim=-1)  # (max_len, dim)
-    return angles.cos(), angles.sin()
+    angles = torch.outer(positions, freqs)  # (max_len, pair_dim / 2)
+    cos = torch.ones((max_len, dim))
+    sin = torch.zeros((max_len, dim))
+    cos_values = angles.cos()
+    sin_values = angles.sin()
+    cos[:, :pair_dim:2] = cos_values
+    cos[:, 1:pair_dim:2] = cos_values
+    sin[:, :pair_dim:2] = sin_values
+    sin[:, 1:pair_dim:2] = sin_values
+    return cos, sin
 
 
 def apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
@@ -62,7 +72,12 @@ def apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
     seq_len = x.shape[-2]
     cos = cos[:seq_len].unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, head_dim)
     sin = sin[:seq_len].unsqueeze(0).unsqueeze(0)
-    x_rot = torch.stack([-x[..., 1::2], x[..., ::2]], dim=-1).flatten(-2)
+    pair_dim = (x.shape[-1] // 2) * 2
+    if pair_dim == 0:
+        return x
+    x_rot = torch.zeros_like(x)
+    x_rot[..., :pair_dim:2] = -x[..., 1:pair_dim:2]
+    x_rot[..., 1:pair_dim:2] = x[..., :pair_dim:2]
     return x * cos + x_rot * sin
 
 

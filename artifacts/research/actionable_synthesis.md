@@ -361,6 +361,7 @@ uv run python src/rdlm/train_arc.py \
 For training:
 
 ```
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 uv run python src/rdlm/train_arc.py \
   --arch structured_encoder \
   --device cuda \
@@ -368,23 +369,21 @@ uv run python src/rdlm/train_arc.py \
   --eval-dir /home/joey/Programming/arc-agi/data/evaluation \
   --use-shape-head \
   --shape-loss-weight 0.1 \
-  --dim 1220 \
+  --dim 512 \
   --max-examples 2 \
   --gradient-checkpointing \
-  --batch-size 8 \
+  --batch-size 1 \
   --lr 3e-4 \
   --steps 20000 \
   --eval-every 1000 \
-  --eval-limit 100 \
-  --sample-steps 64 \
+  --eval-limit 50 \
+  --sample-steps 32 \
   --save-every 1000 \
   --checkpoint-dir checkpoints/arc_infer_shape \
+  --keep-latest-backups 10 \
+  --best-checkpoint-metric exact \
   --eval-report artifacts/reports/arc_infer_shape_train_eval.json \
   --debug-dir artifacts/reports/arc_infer_shape_debug
-  --checkpoint-dir checkpoints/arc_infer_shape \
-  --save-every 1000 \
-  --keep-latest-backups 10 \
-  --best-checkpoint-metric exact
 ```
 
 If running locally without CUDA/checkpoints, keep using:

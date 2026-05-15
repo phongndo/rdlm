@@ -23,6 +23,7 @@ from rdlm.arc import (
 )
 from rdlm.arc_model import ArcOutputDiffusion, ShapeCandidate, StructuredCandidate
 from rdlm.diffusion_lm import RecursiveDiffusionLM
+from rdlm.tiny_block import TinyBlock
 from rdlm.train_arc import (
     _metric_for_best_checkpoint,
     arc_heuristic_candidate_score,
@@ -239,6 +240,14 @@ class ArcTrainingSmokeTests(unittest.TestCase):
         optimizer.step()
 
         self.assertTrue(torch.isfinite(out["loss"]))
+
+    def test_tiny_block_accepts_odd_attention_head_dim(self):
+        model = TinyBlock(dim=20, num_heads=4)
+        x = torch.randn(2, 7, 20)
+        out = model(x)
+
+        self.assertEqual(out.shape, x.shape)
+        self.assertTrue(torch.isfinite(out).all())
 
     def test_one_structured_encoder_step_with_shape_head(self):
         task = {
