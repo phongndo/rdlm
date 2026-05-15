@@ -347,6 +347,28 @@ def _metric_for_best_checkpoint(metrics: dict[str, float], metric_name: str) -> 
     return float(metrics[metric_name])
 
 
+def _parse_index_set(value: str) -> set[int]:
+    indices: set[int] = set()
+    if not value:
+        return indices
+    for raw_part in value.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_text, end_text = part.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if end < start:
+                raise ValueError(f"invalid descending index range: {part}")
+            indices.update(range(start, end + 1))
+        else:
+            indices.add(int(part))
+    if any(index < 0 for index in indices):
+        raise ValueError("eval indices must be non-negative")
+    return indices
+
+
 def _grid_from_values(
     values: list[int],
     shape: tuple[int, int],
@@ -769,9 +791,16 @@ def evaluate_structured(
     arc_heuristic_weight: float = 1.0,
     temporal_consistency_weight: float = 0.0,
     eval_progress_every: int = 0,
+    eval_start_index: int = 0,
+    eval_skip_indices: set[int] | None = None,
 ) -> dict[str, float]:
     model.eval()
     total = min(limit, len(dataset))
+    skip_indices = eval_skip_indices or set()
+    if eval_start_index < 0:
+        raise ValueError("eval_start_index must be non-negative")
+    if eval_start_index > total:
+        raise ValueError(f"eval_start_index={eval_start_index} exceeds eval total={total}")
     eval_start_time = time.time()
     exact = 0
     total_cells = 0
@@ -787,7 +816,117 @@ def evaluate_structured(
     oracle_exact = 0
     examples: list[dict[str, Any]] = []
 
-    for idx in range(total):
+    def accumulate_example(row: dict[str, Any]) -> None:
+        nonlocal exact
+        nonlocal total_cells
+        nonlocal correct_cells
+        nonlocal nonzero_iou_sum
+        nonlocal color_hist_l1_sum
+        nonlocal token_log_prob_sum
+        nonlocal confidence_sum
+        nonlocal shape_exact
+        nonlocal shape_topk_hit
+        nonlocal height_correct
+        nonlocal width_correct
+        nonlocal oracle_exact
+
+        cell_count = int(row["cell_count"])
+        exact += int(bool(row["exact"]))
+        total_cells += cell_count
+        correct_cells += int(row["correct_count"])
+        nonzero_iou_sum += float(row["nonzero_iou"])
+        color_hist_l1_sum += float(row["color_hist_l1"])
+        token_log_prob_sum += float(row["mean_token_log_prob"]) * cell_count
+        confidence_sum += float(row["mean_confidence"]) * cell_count
+        shape_exact += int(bool(row["shape_exact"]))
+        shape_topk_hit += int(bool(row["shape_topk_hit"]))
+        height_correct += int(bool(row["height_acc"]))
+        width_correct += int(bool(row["width_acc"]))
+        oracle_exact += int(bool(row["oracle_shape_exact"]))
+
+    if eval_report is not None and eval_start_index > 0 and eval_report.exists():
+        existing_payload = json.loads(eval_report.read_text(encoding="utf-8"))
+        existing_examples = existing_payload.get("examples", [])
+        if not isinstance(existing_examples, list):
+            raise ValueError(f"existing eval report has invalid examples: {eval_report}")
+        for row in existing_examples:
+            if not isinstance(row, dict):
+                continue
+            row_index = int(row.get("index", -1))
+            if row_index < eval_start_index:
+                accumulate_example(row)
+                examples.append(row)
+
+    def current_summary(processed: int) -> dict[str, float]:
+        if processed == 0:
+            return {
+                "exact": 0.0,
+                "valid": 1.0,
+                "cell_acc": 0.0,
+                "nonzero_iou": 0.0,
+                "color_hist_l1": 0.0,
+                "mean_token_log_prob": 0.0,
+                "mean_confidence": 0.0,
+                "shape_exact": 0.0,
+                "shape_topk_hit": 0.0,
+                "height_acc": 0.0,
+                "width_acc": 0.0,
+                "oracle_shape_exact": 0.0,
+            }
+        return {
+            "exact": exact / processed,
+            "valid": 1.0,
+            "cell_acc": correct_cells / max(total_cells, 1),
+            "nonzero_iou": nonzero_iou_sum / processed,
+            "color_hist_l1": color_hist_l1_sum / processed,
+            "mean_token_log_prob": token_log_prob_sum / max(total_cells, 1),
+            "mean_confidence": confidence_sum / max(total_cells, 1),
+            "shape_exact": shape_exact / processed,
+            "shape_topk_hit": shape_topk_hit / processed,
+            "height_acc": height_correct / processed,
+            "width_acc": width_correct / processed,
+            "oracle_shape_exact": oracle_exact / processed,
+        }
+
+    def report_payload(summary: dict[str, float], complete: bool) -> dict[str, Any]:
+        return {
+            "summary": summary,
+            "examples": examples,
+            "metadata": {
+                "architecture": "structured_encoder",
+                "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
+                "inference_mode": inference_mode,
+                "num_candidates": num_candidates,
+                "sample_steps": sample_steps,
+                "temperature_start": temperature_start,
+                "temperature_end": temperature_end,
+                "ensemble_strategy": ensemble_strategy,
+                "infer_shape": infer_shape,
+                "shape_top_k": shape_top_k,
+                "shape_score_weight": shape_score_weight,
+                "dump_candidates": dump_candidates,
+                "adaptive_sample_steps": adaptive_sample_steps,
+                "min_sample_steps": min_sample_steps,
+                "max_sample_steps": max_sample_steps,
+                "reference_grid_area": reference_grid_area,
+                "early_stop_confidence": early_stop_confidence,
+                "early_stop_entropy": early_stop_entropy,
+                "early_stop_patience": early_stop_patience,
+                "arc_heuristic_weight": arc_heuristic_weight,
+                "temporal_consistency_weight": temporal_consistency_weight,
+                "eval_start_index": eval_start_index,
+                "eval_skip_indices": sorted(skip_indices),
+                "eval_total": total,
+                "eval_complete": complete,
+                "args": _jsonable_args(args),
+            },
+        }
+
+    for idx in range(eval_start_index, total):
+        if idx in skip_indices:
+            if eval_progress_every > 0:
+                print(f"[eval] skipping idx={idx}", flush=True)
+            continue
         batch = collate_structured_arc_examples([dataset[idx]])
         moved = {
             key: value.to(device) for key, value in batch.items() if isinstance(value, torch.Tensor)
@@ -979,22 +1118,10 @@ def evaluate_structured(
         shape_topk_match = expected_shape in candidate_shape_set
         height_match = predicted_shape[0] == expected_shape[0]
         width_match = predicted_shape[1] == expected_shape[1]
-        shape_exact += int(shape_match)
-        shape_topk_hit += int(shape_topk_match)
-        height_correct += int(height_match)
-        width_correct += int(width_match)
-        oracle_exact += int(oracle_exact_for_example)
-        if prediction_metrics["exact"]:
-            exact += 1
         cell_count = int(prediction_metrics["cell_count"])
-        total_cells += cell_count
-        correct_cells += int(prediction_metrics["correct_count"])
-        nonzero_iou_sum += float(prediction_metrics["nonzero_iou"])
-        color_hist_l1_sum += float(prediction_metrics["color_hist_l1"])
-        token_log_prob_sum += float(prediction_metrics["mean_token_log_prob"]) * cell_count
-        confidence_sum += float(prediction_metrics["mean_confidence"]) * cell_count
 
         example_row = {
+            "index": idx,
             "task_id": task_id,
             "target_shape": list(expected_shape),
             "predicted_shape": list(predicted_shape),
@@ -1004,6 +1131,8 @@ def evaluate_structured(
             "height_acc": height_match,
             "width_acc": width_match,
             "oracle_shape_exact": oracle_exact_for_example,
+            "cell_count": cell_count,
+            "correct_count": int(prediction_metrics["correct_count"]),
             "cell_acc": prediction_metrics["cell_acc"],
             "nonzero_iou": prediction_metrics["nonzero_iou"],
             "color_hist_l1": prediction_metrics["color_hist_l1"],
@@ -1012,22 +1141,31 @@ def evaluate_structured(
         }
         if dump_candidates:
             example_row["candidates"] = candidate_rows
+        accumulate_example(example_row)
         examples.append(example_row)
+        processed = len(examples)
+        if eval_report is not None:
+            _write_json(eval_report, report_payload(current_summary(processed), idx + 1 == total))
         if eval_progress_every > 0 and (
-            idx == 0 or (idx + 1) % eval_progress_every == 0 or idx + 1 == total
+            idx == eval_start_index
+            or (idx - eval_start_index + 1) % eval_progress_every == 0
+            or idx + 1 == total
         ):
             completed = idx + 1
+            completed_this_run = idx - eval_start_index + 1
             elapsed = time.time() - eval_start_time
-            seconds_per_example = elapsed / completed
-            remaining = max(total - completed, 0)
+            seconds_per_example = elapsed / completed_this_run
+            remaining = max(total - idx - 1, 0)
             eta = seconds_per_example * remaining
             rolling_cell_acc = correct_cells / max(total_cells, 1)
             print(
                 f"[eval] {completed}/{total} "
+                f"idx={idx} "
+                f"task={task_id} "
                 f"elapsed={elapsed:.1f}s eta={eta:.1f}s "
-                f"exact={exact / completed:.3%} "
+                f"exact={exact / processed:.3%} "
                 f"cell_acc={rolling_cell_acc:.3%} "
-                f"shape_exact={shape_exact / completed:.3%}",
+                f"shape_exact={shape_exact / processed:.3%}",
                 flush=True,
             )
         if debug_dir is not None and idx < debug_limit:
@@ -1045,68 +1183,9 @@ def evaluate_structured(
             _write_json(debug_dir / f"{idx:04d}_{task_id}.json", debug_payload)
 
     model.train()
-    if total == 0:
-        summary = {
-            "exact": 0.0,
-            "valid": 1.0,
-            "cell_acc": 0.0,
-            "nonzero_iou": 0.0,
-            "color_hist_l1": 0.0,
-            "mean_token_log_prob": 0.0,
-            "mean_confidence": 0.0,
-            "shape_exact": 0.0,
-            "shape_topk_hit": 0.0,
-            "height_acc": 0.0,
-            "width_acc": 0.0,
-            "oracle_shape_exact": 0.0,
-        }
-    else:
-        summary = {
-            "exact": exact / total,
-            "valid": 1.0,
-            "cell_acc": correct_cells / max(total_cells, 1),
-            "nonzero_iou": nonzero_iou_sum / total,
-            "color_hist_l1": color_hist_l1_sum / total,
-            "mean_token_log_prob": token_log_prob_sum / max(total_cells, 1),
-            "mean_confidence": confidence_sum / max(total_cells, 1),
-            "shape_exact": shape_exact / total,
-            "shape_topk_hit": shape_topk_hit / total,
-            "height_acc": height_correct / total,
-            "width_acc": width_correct / total,
-            "oracle_shape_exact": oracle_exact / total,
-        }
+    summary = current_summary(len(examples))
     if eval_report is not None:
-        _write_json(
-            eval_report,
-            {
-                "summary": summary,
-                "examples": examples,
-                "metadata": {
-                    "architecture": "structured_encoder",
-                    "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
-                    "inference_mode": inference_mode,
-                    "num_candidates": num_candidates,
-                    "sample_steps": sample_steps,
-                    "temperature_start": temperature_start,
-                    "temperature_end": temperature_end,
-                    "ensemble_strategy": ensemble_strategy,
-                    "infer_shape": infer_shape,
-                    "shape_top_k": shape_top_k,
-                    "shape_score_weight": shape_score_weight,
-                    "dump_candidates": dump_candidates,
-                    "adaptive_sample_steps": adaptive_sample_steps,
-                    "min_sample_steps": min_sample_steps,
-                    "max_sample_steps": max_sample_steps,
-                    "reference_grid_area": reference_grid_area,
-                    "early_stop_confidence": early_stop_confidence,
-                    "early_stop_entropy": early_stop_entropy,
-                    "early_stop_patience": early_stop_patience,
-                    "arc_heuristic_weight": arc_heuristic_weight,
-                    "temporal_consistency_weight": temporal_consistency_weight,
-                    "args": _jsonable_args(args),
-                },
-            },
-        )
+        _write_json(eval_report, report_payload(summary, True))
     return summary
 
 
@@ -1261,6 +1340,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Print structured eval progress every N examples. Set to 0 to disable.",
+    )
+    parser.add_argument(
+        "--eval-start-index",
+        type=int,
+        default=0,
+        help="Start structured eval at this zero-based dataset index. Useful for suffix reruns.",
+    )
+    parser.add_argument(
+        "--eval-skip-indices",
+        type=str,
+        default="",
+        help="Comma-separated structured eval indices or ranges to skip, e.g. '6' or '6,10-12'.",
     )
     parser.add_argument("--debug-dir", type=Path, default=None)
     parser.add_argument("--debug-limit", type=int, default=5)
@@ -1482,6 +1573,8 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
             arc_heuristic_weight=args.arc_heuristic_weight,
             temporal_consistency_weight=args.temporal_consistency_weight,
             eval_progress_every=args.eval_progress_every,
+            eval_start_index=args.eval_start_index,
+            eval_skip_indices=_parse_index_set(args.eval_skip_indices),
         )
         print(
             f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
@@ -1617,6 +1710,8 @@ def run_training_loop(
                     arc_heuristic_weight=args.arc_heuristic_weight,
                     temporal_consistency_weight=args.temporal_consistency_weight,
                     eval_progress_every=args.eval_progress_every,
+                    eval_start_index=args.eval_start_index,
+                    eval_skip_indices=_parse_index_set(args.eval_skip_indices),
                 )
             else:
                 metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
