@@ -1388,6 +1388,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=20000)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument(
+        "--train-progress-every",
+        type=int,
+        default=0,
+        help="Print training progress every N steps in addition to --log-every. Set 1 for every step.",
+    )
+    parser.add_argument(
+        "--train-stage-log",
+        action="store_true",
+        help="Print per-step training stage timings for data fetch, transfer, forward, backward, and optimizer.",
+    )
     parser.add_argument("--eval-every", type=int, default=1000)
     parser.add_argument("--eval-limit", type=int, default=50)
     parser.add_argument("--sample-steps", type=int, default=64)
@@ -1696,6 +1707,14 @@ def run_training_loop(
     print(f"Architecture: {args.arch}")
     print(f"ARC examples: train={len(train_dataset)}, eval={eval_count}")
     print(f"Model: {total_params:,} params on {device}")
+    print(
+        "Config: "
+        f"steps={args.steps} batch_size={args.batch_size} lr={args.lr:.2e} "
+        f"dim={args.dim} heads={args.num_heads} "
+        f"latent_refinements={args.num_latent_refinements} "
+        f"refinement_blocks={args.num_refinement_blocks} "
+        f"gradient_checkpointing={args.gradient_checkpointing}"
+    )
     print(f"{'Step':>8} {'Loss':>10} {'Acc%':>8} {'Mask%':>8} {'LR':>10} {'Time':>8}")
     print("-" * 60)
 
@@ -1705,13 +1724,22 @@ def run_training_loop(
     last_eval_metrics: dict[str, float] | None = None
     best_eval_metric: float | None = None
     for step in range(start_step, args.steps):
+        step_start = time.time()
+        stage_start = step_start
+        restarted_loader = False
         try:
             batch = next(train_iter)
         except StopIteration:
             train_iter = iter(train_loader)
             batch = next(train_iter)
+            restarted_loader = True
+        fetch_elapsed = time.time() - stage_start
 
+        stage_start = time.time()
         moved = move_tensor_batch(batch, device)
+        transfer_elapsed = time.time() - stage_start
+
+        stage_start = time.time()
         optimizer.zero_grad()
         if args.arch == "serialized":
             out = model(
@@ -1721,22 +1749,61 @@ def run_training_loop(
             )
         else:
             out = model(**structured_forward_kwargs(moved))
+        forward_elapsed = time.time() - stage_start
+
+        stage_start = time.time()
         out["loss"].backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        backward_elapsed = time.time() - stage_start
+
+        stage_start = time.time()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        clip_elapsed = time.time() - stage_start
+
+        stage_start = time.time()
         optimizer.step()
         scheduler.step()
+        optim_elapsed = time.time() - stage_start
         last_out = out
+        step_elapsed = time.time() - step_start
 
-        if step % args.log_every == 0 or step == args.steps - 1:
+        should_log_progress = (
+            step % args.log_every == 0
+            or (args.train_progress_every > 0 and step % args.train_progress_every == 0)
+            or step == args.steps - 1
+        )
+        if should_log_progress:
             elapsed = time.time() - start_time
+            steps_done = step - start_step + 1
+            steps_remaining = max(args.steps - step - 1, 0)
+            seconds_per_step = elapsed / max(steps_done, 1)
+            eta = seconds_per_step * steps_remaining
+            memory_text = ""
+            if device == "cuda":
+                allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+                reserved_gb = torch.cuda.memory_reserved() / (1024**3)
+                memory_text = f" mem={allocated_gb:.2f}/{reserved_gb:.2f}GB"
             print(
                 f"{step:>8} {out['loss'].item():>10.4f} "
                 f"{out['masked_acc'].item() * 100:>7.1f}% "
                 f"{out['masked_ratio'].item() * 100:>7.1f}% "
-                f"{optimizer.param_groups[0]['lr']:>10.2e} {elapsed:>7.1f}s"
+                f"{optimizer.param_groups[0]['lr']:>10.2e} {elapsed:>7.1f}s "
+                f"eta={eta:.1f}s step={step_elapsed:.3f}s "
+                f"grad_norm={float(grad_norm):.4f}{memory_text}",
+                flush=True,
+            )
+        if args.train_stage_log:
+            print(
+                f"[train-stage] step={step} "
+                f"fetch={fetch_elapsed:.3f}s transfer={transfer_elapsed:.3f}s "
+                f"forward={forward_elapsed:.3f}s backward={backward_elapsed:.3f}s "
+                f"clip={clip_elapsed:.3f}s optim={optim_elapsed:.3f}s "
+                f"total={step_elapsed:.3f}s restarted_loader={restarted_loader}",
+                flush=True,
             )
 
         if eval_dataset is not None and step > 0 and step % args.eval_every == 0:
+            eval_start = time.time()
+            print(f"[eval] start step={step}", flush=True)
             if args.arch == "structured_encoder":
                 metrics = eval_fn(
                     model,
@@ -1783,10 +1850,16 @@ def run_training_loop(
             if args.arch == "structured_encoder":
                 print(
                     f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
-                    f"cell_acc={metrics['cell_acc']:.3%} shape_exact={metrics['shape_exact']:.3%}"
+                    f"cell_acc={metrics['cell_acc']:.3%} shape_exact={metrics['shape_exact']:.3%} "
+                    f"elapsed={time.time() - eval_start:.1f}s",
+                    flush=True,
                 )
             else:
-                print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
+                print(
+                    f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
+                    f"elapsed={time.time() - eval_start:.1f}s",
+                    flush=True,
+                )
             last_eval_metrics = metrics
             current_best_metric = _metric_for_best_checkpoint(
                 metrics,
@@ -1805,7 +1878,8 @@ def run_training_loop(
                 )
                 print(
                     f"[ckpt] updated best {args.best_checkpoint_metric}="
-                    f"{current_best_metric:.6f} -> {best_path}"
+                    f"{current_best_metric:.6f} -> {best_path}",
+                    flush=True,
                 )
 
         if step > 0 and step % args.save_every == 0:
@@ -1826,9 +1900,9 @@ def run_training_loop(
                 args,
             )
             if backup_path is not None:
-                print(f"[ckpt] latest -> {latest_path} | backup -> {backup_path}")
+                print(f"[ckpt] latest -> {latest_path} | backup -> {backup_path}", flush=True)
             else:
-                print(f"[ckpt] latest -> {latest_path}")
+                print(f"[ckpt] latest -> {latest_path}", flush=True)
 
     if last_out is not None:
         final_step = args.steps - 1
