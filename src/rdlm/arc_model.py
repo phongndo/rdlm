@@ -275,6 +275,161 @@ class ArcOutputDiffusion(nn.Module):
         mask = torch.ones((1, height * width), dtype=torch.bool, device=device)
         return rows.long(), cols.long(), mask
 
+    @staticmethod
+    @torch.no_grad()
+    def _dependency_score(
+        confidence: Tensor,
+        preds: Tensor,
+        target_mask: Tensor,
+        target_rows: Tensor,
+        target_cols: Tensor,
+    ) -> Tensor:
+        """DOS: Adjust confidence based on spatial dependency consistency.
+
+        For each cell in a grid, computes what fraction of its 4-connected neighbors
+        predict the same color. Adjusts confidence by (1 + 0.5 * neighbor_consistency).
+        Cells spatially consistent with their neighbors get a boost; isolated cells don't.
+        This is training-free and grid-native.
+
+        Args:
+            confidence: (batch, seq_len) — per-token confidence scores
+            preds: (batch, seq_len) — predicted token IDs
+            target_mask: (batch, seq_len) — True for valid target positions
+            target_rows: (batch, seq_len) — row coordinate of each cell (row-major order)
+            target_cols: (batch, seq_len) — col coordinate of each cell (row-major order)
+        Returns:
+            Adjusted confidence of same shape.
+        """
+        batch, seq_len = preds.shape
+        device = preds.device
+        neighbor_scores = torch.zeros_like(confidence)
+
+        for b in range(batch):
+            mask = target_mask[b]
+            if not mask.any():
+                continue
+            rows = target_rows[b][mask]
+            cols = target_cols[b][mask]
+            height = int(rows.max().item()) + 1
+            width = int(cols.max().item()) + 1
+            total_cells = height * width
+
+            # Extract predictions for this sample, ordered by their flat index
+            # target_rows/target_cols are in row-major order, so flat index = r * width + c
+            # but we must account for possible padding via the mask
+            valid_indices = torch.nonzero(mask, as_tuple=False).squeeze(-1)  # (n_valid,)
+            grid_preds = torch.full((total_cells,), -1, dtype=torch.long, device=device)
+            for i, idx in enumerate(valid_indices):
+                r = int(rows[i].item())
+                c = int(cols[i].item())
+                flat = r * width + c
+                grid_preds[flat] = preds[b, idx]
+            grid_preds_2d = grid_preds.view(height, width)
+            has_value = grid_preds_2d >= 0
+
+            # Vectorized neighbor consistency: for each cell, check up/down/left/right
+            neighbor_count = torch.zeros((height, width), device=device)
+            neighbor_match = torch.zeros((height, width), device=device)
+
+            # Right neighbors (use float multiplication for logical AND)
+            if width > 1:
+                rc = has_value[:, :-1] & has_value[:, 1:]
+                rc_f = rc.float()
+                neighbor_count[:, :-1] += rc_f
+                neighbor_count[:, 1:] += rc_f
+                color_match_rc = (grid_preds_2d[:, :-1] == grid_preds_2d[:, 1:]).float()
+                neighbor_match[:, :-1] += rc_f * color_match_rc
+                neighbor_match[:, 1:] += rc_f * color_match_rc
+
+            # Down neighbors
+            if height > 1:
+                dc = has_value[:-1, :] & has_value[1:, :]
+                dc_f = dc.float()
+                neighbor_count[:-1, :] += dc_f
+                neighbor_count[1:, :] += dc_f
+                color_match_dc = (grid_preds_2d[:-1, :] == grid_preds_2d[1:, :]).float()
+                neighbor_match[:-1, :] += dc_f * color_match_dc
+                neighbor_match[1:, :] += dc_f * color_match_dc
+
+            # Consistency per cell
+            consistency = torch.where(
+                neighbor_count > 0,
+                neighbor_match / neighbor_count,
+                torch.zeros_like(neighbor_match),
+            )
+            consistency = consistency * has_value.float()
+
+            # Map back to flat batch indices
+            flat_consistency = consistency.flatten()  # (total_cells,) row-major
+            for i, idx in enumerate(valid_indices):
+                r = int(rows[i].item())
+                c = int(cols[i].item())
+                flat = r * width + c
+                neighbor_scores[b, idx] = flat_consistency[flat]
+
+        # Boost confidence by up to 50% based on neighbor consistency
+        return confidence * (1.0 + 0.5 * neighbor_scores)
+
+    @staticmethod
+    @torch.no_grad()
+    def _temporal_vote(
+        final_preds: Tensor,
+        final_log_probs: Tensor,
+        pred_history: list[Tensor],
+        target_mask: Tensor,
+        weight: str = "uniform",
+    ) -> tuple[Tensor, Tensor]:
+        """Post-process: vote across prediction history to recover lost correct answers.
+
+        The "Time Is a Feature" paper (arxiv 2508.09138) shows that correct answers
+        often emerge in the middle of the denoising process but get overwritten in
+        later steps. This method votes across intermediate predictions.
+
+        Args:
+            final_preds: (batch, seq_len) — predictions from the last denoising step
+            final_log_probs: (batch, seq_len) — log probs from the last step
+            pred_history: list of (batch, seq_len) — predictions recorded at each step
+            target_mask: (batch, seq_len) — True for valid target positions
+            weight: vote weighting — "uniform" (majority) or "recency" (later steps weighted higher)
+        Returns:
+            (voted_preds, voted_log_probs) with same shapes.
+        """
+        if not pred_history:
+            return final_preds, final_log_probs
+
+        batch, seq_len = final_preds.shape
+        device = final_preds.device
+        n_steps = len(pred_history)
+        mask = target_mask.bool()
+
+        # Stack: (steps, batch, seq_len)
+        history = torch.stack(pred_history, dim=0)
+
+        # One-hot encode votes: (steps, batch, seq_len, vocab)
+        one_hot = functional.one_hot(history, num_classes=NUM_OUTPUT_COLORS).float()
+
+        if weight == "recency":
+            step_weights = torch.arange(1, n_steps + 1, device=device).float()
+            step_weights = step_weights / step_weights.sum()
+            step_weights = step_weights.view(-1, 1, 1, 1)
+            counts = (one_hot * step_weights).sum(dim=0)
+        else:  # uniform
+            counts = one_hot.sum(dim=0)  # (batch, seq_len, vocab)
+
+        voted = counts.argmax(dim=-1)  # (batch, seq_len)
+
+        # Confidence = vote fraction
+        max_counts = counts.max(dim=-1).values  # (batch, seq_len)
+        vote_fraction = max_counts / n_steps if weight == "uniform" else max_counts
+        vote_fraction = vote_fraction.clamp(min=1e-6)
+        voted_log_probs = torch.log(vote_fraction)
+
+        # Only apply to valid positions, zero out padding
+        voted = torch.where(mask, voted, torch.zeros_like(voted))
+        voted_log_probs = torch.where(mask, voted_log_probs, final_log_probs)
+
+        return voted, voted_log_probs
+
     def _refine_one_block(
         self,
         outputs: Tensor,
@@ -470,6 +625,13 @@ class ArcOutputDiffusion(nn.Module):
         context_object_widths: Tensor | None = None,
         context_object_rel_rows: Tensor | None = None,
         context_object_rel_cols: Tensor | None = None,
+        # ── Training-free sampling strategy improvements ────────────
+        sampling_strategy: str = "confidence",
+        enable_calibration: bool = False,
+        calibration_strength: float = 0.3,
+        temporal_vote: bool = False,
+        temporal_vote_weight: str = "uniform",
+        vote_start_ratio: float = 0.0,
     ) -> tuple[Tensor, Tensor]:
         batch, target_len = target_rows.shape
         current = torch.full(
@@ -495,6 +657,15 @@ class ArcOutputDiffusion(nn.Module):
             context_object_rel_rows=context_object_rel_rows,
             context_object_rel_cols=context_object_rel_cols,
         )
+
+        # ── Temporal voting state ───────────────────────────────────
+        pred_history: list[Tensor] = []
+        vote_start_step = int(vote_start_ratio * transfer_schedule.shape[1]) if temporal_vote else 0
+
+        # ── Calibration state ───────────────────────────────────────
+        prev_preds: Tensor | None = None
+        flip_counts: Tensor = torch.zeros((batch, target_len), device=self.device)
+
         for step_idx in range(transfer_schedule.shape[1]):
             if transfer_schedule.shape[1] <= 1:
                 temperature = temperature_end
@@ -524,6 +695,29 @@ class ArcOutputDiffusion(nn.Module):
                 preds.unsqueeze(-1),
             ).squeeze(-1)
             confidence = clean_pred_log_probs.exp()
+
+            # ── Record prediction history for temporal voting ─────────
+            if temporal_vote and step_idx >= vote_start_step:
+                pred_history.append(preds.clone())
+
+            # ── Calibration: penalize confidence for flip-prone positions ──
+            if enable_calibration:
+                if prev_preds is not None:
+                    masked_positions = ~revealed
+                    flip_events = (preds != prev_preds) & masked_positions
+                    flip_counts = flip_counts + flip_events
+                prev_preds = preds.clone()
+                if step_idx > 1:
+                    flip_rate = flip_counts / (step_idx + 1)
+                    calibration_factor = 1.0 - calibration_strength * flip_rate
+                    confidence = confidence * calibration_factor
+
+            # ── DOS: spatial dependency scoring ────────────────────────
+            if sampling_strategy == "dos":
+                confidence = self._dependency_score(
+                    confidence, preds, target_mask, target_rows, target_cols
+                )
+
             confidence = confidence.masked_fill(~target_mask.bool() | revealed, -float("inf"))
             transfer = torch.zeros_like(revealed)
             for row in range(batch):
@@ -534,6 +728,14 @@ class ArcOutputDiffusion(nn.Module):
             current = torch.where(transfer, preds, current)
             token_log_probs = torch.where(transfer, clean_pred_log_probs, token_log_probs)
             revealed = revealed | transfer
+
+        # ── Temporal voting post-processing ──────────────────────────
+        if temporal_vote and pred_history:
+            current, token_log_probs = self._temporal_vote(
+                current, token_log_probs, pred_history, target_mask,
+                weight=temporal_vote_weight,
+            )
+
         return (
             torch.where(target_mask.bool(), current, torch.zeros_like(current)),
             torch.where(target_mask.bool(), token_log_probs, torch.zeros_like(token_log_probs)),
@@ -624,6 +826,13 @@ class ArcOutputDiffusion(nn.Module):
         context_object_widths: Tensor | None = None,
         context_object_rel_rows: Tensor | None = None,
         context_object_rel_cols: Tensor | None = None,
+        # ── Sampling strategy improvements ──────────────────────────
+        sampling_strategy: str = "confidence",
+        enable_calibration: bool = False,
+        calibration_strength: float = 0.3,
+        temporal_vote: bool = False,
+        temporal_vote_weight: str = "uniform",
+        vote_start_ratio: float = 0.0,
     ) -> list[StructuredCandidate]:
         if context_colors.shape[0] != 1:
             raise ValueError("sample_candidates currently supports batch size 1")
@@ -655,6 +864,12 @@ class ArcOutputDiffusion(nn.Module):
                     context_object_widths=context_object_widths,
                     context_object_rel_rows=context_object_rel_rows,
                     context_object_rel_cols=context_object_rel_cols,
+                    sampling_strategy=sampling_strategy,
+                    enable_calibration=enable_calibration,
+                    calibration_strength=calibration_strength,
+                    temporal_vote=temporal_vote,
+                    temporal_vote_weight=temporal_vote_weight,
+                    vote_start_ratio=vote_start_ratio,
                 )
             else:
                 sample, token_log_probs = self._sample_ensemble_with_scores(
@@ -678,6 +893,12 @@ class ArcOutputDiffusion(nn.Module):
                     context_object_widths=context_object_widths,
                     context_object_rel_rows=context_object_rel_rows,
                     context_object_rel_cols=context_object_rel_cols,
+                    sampling_strategy=sampling_strategy,
+                    enable_calibration=enable_calibration,
+                    calibration_strength=calibration_strength,
+                    temporal_vote=temporal_vote,
+                    temporal_vote_weight=temporal_vote_weight,
+                    vote_start_ratio=vote_start_ratio,
                 )
             valid_scores = token_log_probs[0][target_mask[0]]
             mean_log_prob = float(valid_scores.mean().item()) if valid_scores.numel() else 0.0
@@ -713,6 +934,13 @@ class ArcOutputDiffusion(nn.Module):
         context_object_widths: Tensor | None = None,
         context_object_rel_rows: Tensor | None = None,
         context_object_rel_cols: Tensor | None = None,
+        # ── Sampling strategy improvements ──────────────────────────
+        sampling_strategy: str = "confidence",
+        enable_calibration: bool = False,
+        calibration_strength: float = 0.3,
+        temporal_vote: bool = False,
+        temporal_vote_weight: str = "uniform",
+        vote_start_ratio: float = 0.0,
     ) -> dict[str, Tensor]:
         batch, target_len = target_rows.shape
         current = torch.full(
@@ -739,6 +967,14 @@ class ArcOutputDiffusion(nn.Module):
             context_object_rel_cols=context_object_rel_cols,
         )
 
+        # ── Temporal voting state ───────────────────────────────────
+        pred_history: list[Tensor] = []
+        vote_start_step = int(vote_start_ratio * transfer_schedule.shape[1]) if temporal_vote else 0
+
+        # ── Calibration state ───────────────────────────────────────
+        prev_preds: Tensor | None = None
+        flip_counts: Tensor = torch.zeros((batch, target_len), device=self.device)
+
         revealed_history: list[Tensor] = []
         sample_history: list[Tensor] = []
         confidence_history: list[Tensor] = []
@@ -759,7 +995,32 @@ class ArcOutputDiffusion(nn.Module):
                 preds.unsqueeze(-1),
             ).squeeze(-1)
             confidence = clean_pred_log_probs.exp()
-            selection_confidence = confidence.masked_fill(
+
+            # ── Record prediction history for temporal voting ─────────
+            if temporal_vote and step_idx >= vote_start_step:
+                pred_history.append(preds.clone())
+
+            # ── Calibration: penalize confidence for flip-prone positions ──
+            if enable_calibration:
+                if prev_preds is not None:
+                    masked_positions = ~revealed
+                    flip_events = (preds != prev_preds) & masked_positions
+                    flip_counts = flip_counts + flip_events
+                prev_preds = preds.clone()
+                if step_idx > 1:
+                    flip_rate = flip_counts / (step_idx + 1)
+                    calibration_factor = 1.0 - calibration_strength * flip_rate
+                    confidence = confidence * calibration_factor
+
+            # ── DOS: spatial dependency scoring ────────────────────────
+            if sampling_strategy == "dos":
+                selection_confidence = self._dependency_score(
+                    confidence, preds, target_mask, target_rows, target_cols
+                )
+            else:
+                selection_confidence = confidence
+
+            selection_confidence = selection_confidence.masked_fill(
                 ~target_mask_bool | revealed,
                 -float("inf"),
             )
@@ -776,6 +1037,13 @@ class ArcOutputDiffusion(nn.Module):
             revealed_history.append(revealed.clone())
             confidence_history.append(
                 torch.where(target_mask_bool, confidence, torch.zeros_like(confidence))
+            )
+
+        # ── Temporal voting post-processing ──────────────────────────
+        if temporal_vote and pred_history:
+            current, token_log_probs = self._temporal_vote(
+                current, token_log_probs, pred_history, target_mask,
+                weight=temporal_vote_weight,
             )
 
         history_shape = (batch, 0, target_len)
@@ -816,6 +1084,13 @@ class ArcOutputDiffusion(nn.Module):
         context_object_widths: Tensor | None = None,
         context_object_rel_rows: Tensor | None = None,
         context_object_rel_cols: Tensor | None = None,
+        # ── Sampling strategy improvements ──────────────────────────
+        sampling_strategy: str = "confidence",
+        enable_calibration: bool = False,
+        calibration_strength: float = 0.3,
+        temporal_vote: bool = False,
+        temporal_vote_weight: str = "uniform",
+        vote_start_ratio: float = 0.0,
     ) -> Tensor:
         samples, _scores = self._sample_with_scores(
             context_colors=context_colors,
@@ -834,6 +1109,12 @@ class ArcOutputDiffusion(nn.Module):
             context_object_widths=context_object_widths,
             context_object_rel_rows=context_object_rel_rows,
             context_object_rel_cols=context_object_rel_cols,
+            sampling_strategy=sampling_strategy,
+            enable_calibration=enable_calibration,
+            calibration_strength=calibration_strength,
+            temporal_vote=temporal_vote,
+            temporal_vote_weight=temporal_vote_weight,
+            vote_start_ratio=vote_start_ratio,
         )
         return samples
 
@@ -860,6 +1141,13 @@ class ArcOutputDiffusion(nn.Module):
         context_object_widths: Tensor | None = None,
         context_object_rel_rows: Tensor | None = None,
         context_object_rel_cols: Tensor | None = None,
+        # ── Sampling strategy improvements ──────────────────────────
+        sampling_strategy: str = "confidence",
+        enable_calibration: bool = False,
+        calibration_strength: float = 0.3,
+        temporal_vote: bool = False,
+        temporal_vote_weight: str = "uniform",
+        vote_start_ratio: float = 0.0,
     ) -> tuple[Tensor, Tensor]:
         if num_candidates < 1:
             raise ValueError("num_candidates must be at least 1")
@@ -890,6 +1178,12 @@ class ArcOutputDiffusion(nn.Module):
                 context_object_widths=context_object_widths,
                 context_object_rel_rows=context_object_rel_rows,
                 context_object_rel_cols=context_object_rel_cols,
+                sampling_strategy=sampling_strategy,
+                enable_calibration=enable_calibration,
+                calibration_strength=calibration_strength,
+                temporal_vote=temporal_vote,
+                temporal_vote_weight=temporal_vote_weight,
+                vote_start_ratio=vote_start_ratio,
             )
             samples.append(sample)
             log_probs.append(scores)
@@ -952,6 +1246,13 @@ class ArcOutputDiffusion(nn.Module):
         context_object_widths: Tensor | None = None,
         context_object_rel_rows: Tensor | None = None,
         context_object_rel_cols: Tensor | None = None,
+        # ── Sampling strategy improvements ──────────────────────────
+        sampling_strategy: str = "confidence",
+        enable_calibration: bool = False,
+        calibration_strength: float = 0.3,
+        temporal_vote: bool = False,
+        temporal_vote_weight: str = "uniform",
+        vote_start_ratio: float = 0.0,
     ) -> Tensor:
         samples, _scores = self._sample_ensemble_with_scores(
             context_colors=context_colors,
@@ -974,5 +1275,11 @@ class ArcOutputDiffusion(nn.Module):
             context_object_widths=context_object_widths,
             context_object_rel_rows=context_object_rel_rows,
             context_object_rel_cols=context_object_rel_cols,
+            sampling_strategy=sampling_strategy,
+            enable_calibration=enable_calibration,
+            calibration_strength=calibration_strength,
+            temporal_vote=temporal_vote,
+            temporal_vote_weight=temporal_vote_weight,
+            vote_start_ratio=vote_start_ratio,
         )
         return samples

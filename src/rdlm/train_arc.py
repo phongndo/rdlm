@@ -630,6 +630,13 @@ def evaluate_structured(
     shape_top_k: int = 5,
     shape_score_weight: float = 0.25,
     dump_candidates: bool = False,
+    # ── Training-free sampling strategy improvements ──────────────
+    sampling_strategy: str = "confidence",
+    enable_calibration: bool = False,
+    calibration_strength: float = 0.3,
+    temporal_vote: bool = False,
+    temporal_vote_weight: str = "uniform",
+    vote_start_ratio: float = 0.0,
 ) -> dict[str, float]:
     model.eval()
     total = min(limit, len(dataset))
@@ -667,6 +674,12 @@ def evaluate_structured(
                 oracle_generated, oracle_log_probs = model._sample_with_scores(
                     **oracle_sample_kwargs,
                     steps=sample_steps,
+                    sampling_strategy=sampling_strategy,
+                    enable_calibration=enable_calibration,
+                    calibration_strength=calibration_strength,
+                    temporal_vote=temporal_vote,
+                    temporal_vote_weight=temporal_vote_weight,
+                    vote_start_ratio=vote_start_ratio,
                 )
             else:
                 oracle_generated, oracle_log_probs = model._sample_ensemble_with_scores(
@@ -676,6 +689,12 @@ def evaluate_structured(
                     temperature_start=temperature_start,
                     temperature_end=temperature_end,
                     strategy=ensemble_strategy,
+                    sampling_strategy=sampling_strategy,
+                    enable_calibration=enable_calibration,
+                    calibration_strength=calibration_strength,
+                    temporal_vote=temporal_vote,
+                    temporal_vote_weight=temporal_vote_weight,
+                    vote_start_ratio=vote_start_ratio,
                 )
             oracle_prediction_metrics = structured_prediction_metrics(
                 oracle_generated,
@@ -703,6 +722,12 @@ def evaluate_structured(
                 temperature_start=temperature_start,
                 temperature_end=temperature_end,
                 ensemble_strategy=ensemble_strategy,
+                sampling_strategy=sampling_strategy,
+                enable_calibration=enable_calibration,
+                calibration_strength=calibration_strength,
+                temporal_vote=temporal_vote,
+                temporal_vote_weight=temporal_vote_weight,
+                vote_start_ratio=vote_start_ratio,
             )
             if not structured_candidates:
                 raise RuntimeError(f"no structured candidates generated for {task_id}")
@@ -731,7 +756,16 @@ def evaluate_structured(
         else:
             sample_kwargs = structured_sample_kwargs(moved)
             if inference_mode == "greedy":
-                trace = model.sample_with_trace(**sample_kwargs, steps=sample_steps)
+                trace = model.sample_with_trace(
+                    **sample_kwargs,
+                    steps=sample_steps,
+                    sampling_strategy=sampling_strategy,
+                    enable_calibration=enable_calibration,
+                    calibration_strength=calibration_strength,
+                    temporal_vote=temporal_vote,
+                    temporal_vote_weight=temporal_vote_weight,
+                    vote_start_ratio=vote_start_ratio,
+                )
                 generated = trace["samples"]
                 token_log_probs = trace["token_log_probs"]
             else:
@@ -742,6 +776,12 @@ def evaluate_structured(
                     temperature_start=temperature_start,
                     temperature_end=temperature_end,
                     strategy=ensemble_strategy,
+                    sampling_strategy=sampling_strategy,
+                    enable_calibration=enable_calibration,
+                    calibration_strength=calibration_strength,
+                    temporal_vote=temporal_vote,
+                    temporal_vote_weight=temporal_vote_weight,
+                    vote_start_ratio=vote_start_ratio,
                 )
             predicted_shape = expected_shape
             generated_values = generated[0]
@@ -1007,6 +1047,48 @@ def parse_args() -> argparse.Namespace:
         default="confidence",
     )
     parser.add_argument(
+        "--sampling-strategy",
+        choices=["confidence", "dos"],
+        default="confidence",
+        help="Token selection strategy during diffusion decoding. "
+        "'confidence' = original softmax confidence, "
+        "'dos' = Dependency-Oriented Sampling with spatial neighbor consistency.",
+    )
+    parser.add_argument(
+        "--enable-calibration",
+        action="store_true",
+        help="Penalize confidence for positions whose predictions flip between steps. "
+        "Reduces high-confidence garbage by suppressing unstable tokens.",
+    )
+    parser.add_argument(
+        "--calibration-strength",
+        type=float,
+        default=0.3,
+        help="Strength of the calibration penalty (0 = disabled, 1 = max penalty). "
+        "Effective confidence = confidence * (1 - strength * flip_rate).",
+    )
+    parser.add_argument(
+        "--temporal-vote",
+        action="store_true",
+        help="Enable temporal self-consistency voting across denoising steps. "
+        "Instead of taking the final step's predictions, votes across intermediate steps "
+        "to recover correct predictions that get overwritten late in denoising.",
+    )
+    parser.add_argument(
+        "--temporal-vote-weight",
+        choices=["uniform", "recency"],
+        default="uniform",
+        help="Vote weighting for temporal voting: 'uniform' = majority, "
+        "'recency' = higher weight on later steps.",
+    )
+    parser.add_argument(
+        "--vote-start-ratio",
+        type=float,
+        default=0.0,
+        help="Fraction of steps to skip before starting to record votes. "
+        "0 = record from step 0, 0.5 = record from halfway.",
+    )
+    parser.add_argument(
         "--infer-shape",
         action="store_true",
         help="Evaluate by proposing output shapes from context instead of using the target shape.",
@@ -1098,6 +1180,12 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
             shape_top_k=args.shape_top_k,
             shape_score_weight=args.shape_score_weight,
             dump_candidates=args.dump_candidates,
+            sampling_strategy=args.sampling_strategy,
+            enable_calibration=args.enable_calibration,
+            calibration_strength=args.calibration_strength,
+            temporal_vote=args.temporal_vote,
+            temporal_vote_weight=args.temporal_vote_weight,
+            vote_start_ratio=args.vote_start_ratio,
         )
         print(
             f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
@@ -1216,6 +1304,12 @@ def run_training_loop(
                     shape_top_k=args.shape_top_k,
                     shape_score_weight=args.shape_score_weight,
                     dump_candidates=args.dump_candidates,
+                    sampling_strategy=args.sampling_strategy,
+                    enable_calibration=args.enable_calibration,
+                    calibration_strength=args.calibration_strength,
+                    temporal_vote=args.temporal_vote,
+                    temporal_vote_weight=args.temporal_vote_weight,
+                    vote_start_ratio=args.vote_start_ratio,
                 )
             else:
                 metrics = eval_fn(model, eval_dataset, device, args.eval_limit, args.sample_steps)
