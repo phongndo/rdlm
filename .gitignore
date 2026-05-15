@@ -11,12 +11,15 @@ env/
 # uv
 uv.lock
 
-# Model artifacts
+# Model weights (large, not tracked)
 *.pt
 *.bin
 *.safetensors
 checkpoints/
-artifacts/
+
+# Per-example debug dumps (full diffusion trajectories, large)
+artifacts/reports/arc_debug/
+artifacts/reports/arc_debug_smoke/
 
 # Experiment tracking
 wandb/

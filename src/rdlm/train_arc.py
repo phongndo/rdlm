@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
 import json
 import random
 import time
@@ -196,6 +198,53 @@ def structured_context_kwargs(batch: dict[str, Any]) -> dict[str, torch.Tensor]:
     return kwargs
 
 
+def _auto_artifact_path(prefix: str, suffix: str = ".json") -> Path:
+    """Generate a timestamped path under artifacts/reports/."""
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path(f"artifacts/reports/{prefix}_{ts}{suffix}")
+
+
+def _ensure_artifact_args(args: argparse.Namespace) -> None:
+    """Fill in auto-timestamped artifact paths when not explicitly set."""
+    if args.eval_report is None:
+        args.eval_report = _auto_artifact_path("arc_eval")
+    if args.debug_dir is None:
+        args.debug_dir = _auto_artifact_path("arc_debug", "")
+
+
+def _config_hash(args: argparse.Namespace) -> str:
+    """Short hash of configuration-relevant args for unique checkpoint dirs."""
+    relevant_keys = [
+        "arch",
+        "dim",
+        "seq_len",
+        "max_grid_size",
+        "max_examples",
+        "gradient_checkpointing",
+        "stochastic_depth_prob",
+        "aux_loss_weight",
+        "use_object_features",
+        "use_shape_head",
+        "shape_loss_weight",
+        "lr",
+        "batch_size",
+        "steps",
+        "seed",
+        "num_workers",
+    ]
+    payload = {k: vars(args).get(k) for k in relevant_keys}
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:8]
+    return digest
+
+
+def _ensure_checkpoint_dir(args: argparse.Namespace) -> None:
+    """Append config hash to checkpoint dir to avoid cross-config collisions."""
+    h = _config_hash(args)
+    base = str(args.checkpoint_dir)
+    if not base.endswith(f"_{h}"):
+        args.checkpoint_dir = Path(f"{base}_{h}")
+
+
 def _jsonable_args(args: argparse.Namespace | None) -> dict[str, Any]:
     if args is None:
         return {}
@@ -208,6 +257,42 @@ def _jsonable_args(args: argparse.Namespace | None) -> dict[str, Any]:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _count_parameters(model: torch.nn.Module) -> dict[str, int]:
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return {"total": total, "trainable": trainable}
+
+
+def save_training_summary(
+    summary_dir: Path,
+    args: argparse.Namespace,
+    model: ArchitectureModel,
+    step: int,
+    final_loss: float | None = None,
+    eval_metrics: dict[str, float] | None = None,
+    elapsed: float | None = None,
+) -> None:
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary: dict[str, Any] = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "step": step,
+        "architecture": args.arch,
+        "args": _jsonable_args(args),
+        "model": {
+            "params": _count_parameters(model),
+            "type": type(model).__name__,
+        },
+        "final_loss": final_loss,
+        "eval_metrics": eval_metrics,
+        "elapsed_seconds": elapsed,
+    }
+    # Write a step-specific copy and a "latest" symlink/replacement
+    step_path = summary_dir / f"step_{step:07d}.json"
+    latest_path = summary_dir / "latest.json"
+    _write_json(step_path, summary)
+    _write_json(latest_path, summary)
 
 
 def _grid_from_values(
@@ -945,6 +1030,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/arc"))
+    parser.add_argument("--training-summary-dir", type=Path, default=Path("artifacts/training"))
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=7)
@@ -983,6 +1069,7 @@ def train_serialized(args: argparse.Namespace, device: str) -> None:
 
 
 def train_structured(args: argparse.Namespace, device: str) -> None:
+    _ensure_artifact_args(args)
     train_dataset, eval_dataset = build_structured_dataset(args)
     model = create_structured_model(args).to(device)
     if args.eval_only:
@@ -1015,6 +1102,13 @@ def train_structured(args: argparse.Namespace, device: str) -> None:
         print(
             f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%} "
             f"cell_acc={metrics['cell_acc']:.3%} shape_exact={metrics['shape_exact']:.3%}"
+        )
+        save_training_summary(
+            args.training_summary_dir,
+            args,
+            model,
+            step=0,
+            eval_metrics=metrics,
         )
         return
     if train_dataset is None:
@@ -1067,6 +1161,7 @@ def run_training_loop(
     start_time = time.time()
     model.train()
     last_out: dict[str, Any] | None = None
+    last_eval_metrics: dict[str, float] | None = None
     for step in range(start_step, args.steps):
         try:
             batch = next(train_iter)
@@ -1131,6 +1226,7 @@ def run_training_loop(
                 )
             else:
                 print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
+            last_eval_metrics = metrics
 
         if step > 0 and step % args.save_every == 0:
             save_checkpoint(
@@ -1159,11 +1255,23 @@ def run_training_loop(
             args.steps - 1,
             args,
         )
-        print(f"Training complete. Final loss: {last_out['loss'].item():.4f}")
+        total_elapsed = time.time() - start_time
+        final_loss = last_out["loss"].item()
+        print(f"Training complete. Final loss: {final_loss:.4f}")
+        save_training_summary(
+            args.training_summary_dir,
+            args,
+            model,
+            step=args.steps - 1,
+            final_loss=final_loss,
+            eval_metrics=last_eval_metrics,
+            elapsed=total_elapsed,
+        )
 
 
 def main() -> None:
     args = parse_args()
+    _ensure_checkpoint_dir(args)
     if not args.eval_only and args.data_dir is None and args.train_dir is None:
         raise SystemExit("provide --data-dir or --train-dir")
     if args.eval_only and args.arch != "structured_encoder":

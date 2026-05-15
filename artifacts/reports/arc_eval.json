@@ -1,0 +1,298 @@
+{
+  "examples": [
+    {
+      "cell_acc": 0.3888888888888889,
+      "color_hist_l1": 0.8888888888888888,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.3730798363685608,
+      "mean_token_log_prob": -1.0019508600234985,
+      "nonzero_iou": 1.0,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        6,
+        6
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        6,
+        6
+      ],
+      "task_id": "00576224",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.16666666666666666,
+      "color_hist_l1": 1.5,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.4222151041030884,
+      "mean_token_log_prob": -0.8824125528335571,
+      "nonzero_iou": 1.0,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        6,
+        6
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        6,
+        6
+      ],
+      "task_id": "00576224",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.1111111111111111,
+      "color_hist_l1": 1.5,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.4339205324649811,
+      "mean_token_log_prob": -0.8735232353210449,
+      "nonzero_iou": 1.0,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        6,
+        6
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        6,
+        6
+      ],
+      "task_id": "00576224",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.85,
+      "color_hist_l1": 0.3,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.8808035254478455,
+      "mean_token_log_prob": -0.1332874745130539,
+      "nonzero_iou": 0.0,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        10,
+        10
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        10,
+        10
+      ],
+      "task_id": "03560426",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.77,
+      "color_hist_l1": 0.34,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.8490031957626343,
+      "mean_token_log_prob": -0.17017862200737,
+      "nonzero_iou": 0.0,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        10,
+        10
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        10,
+        10
+      ],
+      "task_id": "03560426",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.8,
+      "color_hist_l1": 0.4,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.8345797061920166,
+      "mean_token_log_prob": -0.19144219160079956,
+      "nonzero_iou": 0.0,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        10,
+        10
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        10,
+        10
+      ],
+      "task_id": "03560426",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.43222222222222223,
+      "color_hist_l1": 0.37555555555555553,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.9011309742927551,
+      "mean_token_log_prob": -0.1150631457567215,
+      "nonzero_iou": 0.2490566037735849,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        30,
+        30
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        30,
+        30
+      ],
+      "task_id": "05a7bcf2",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.4266666666666667,
+      "color_hist_l1": 0.35333333333333333,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.875737726688385,
+      "mean_token_log_prob": -0.1459352970123291,
+      "nonzero_iou": 0.19963031423290203,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        30,
+        30
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        30,
+        30
+      ],
+      "task_id": "05a7bcf2",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.3977777777777778,
+      "color_hist_l1": 0.37777777777777777,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.9057164192199707,
+      "mean_token_log_prob": -0.10964460670948029,
+      "nonzero_iou": 0.22086956521739132,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        30,
+        30
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        30,
+        30
+      ],
+      "task_id": "05a7bcf2",
+      "width_acc": true
+    },
+    {
+      "cell_acc": 0.47035573122529645,
+      "color_hist_l1": 0.5335968379446641,
+      "exact": false,
+      "height_acc": true,
+      "mean_confidence": 0.8342552185058594,
+      "mean_token_log_prob": -0.19293509423732758,
+      "nonzero_iou": 0.040740740740740744,
+      "oracle_shape_exact": false,
+      "predicted_shape": [
+        23,
+        22
+      ],
+      "shape_exact": true,
+      "shape_topk_hit": true,
+      "target_shape": [
+        23,
+        22
+      ],
+      "task_id": "0607ce86",
+      "width_acc": true
+    }
+  ],
+  "metadata": {
+    "architecture": "structured_encoder",
+    "args": {
+      "arch": "structured_encoder",
+      "augment_color_permutation": false,
+      "augment_grid_noise": false,
+      "augment_translation": false,
+      "aux_loss_weight": 0.0,
+      "batch_size": 8,
+      "checkpoint_dir": "checkpoints/arc",
+      "curriculum": false,
+      "data_dir": null,
+      "debug_dir": "reports/arc_debug",
+      "debug_limit": 10,
+      "device": "cuda",
+      "dim": 256,
+      "dump_candidates": false,
+      "ensemble_strategy": "confidence",
+      "eval_dir": "/home/joey/Programming/arc-agi/data/evaluation",
+      "eval_every": 1000,
+      "eval_limit": 10,
+      "eval_only": true,
+      "eval_report": "reports/arc_eval.json",
+      "gradient_checkpointing": true,
+      "infer_shape": false,
+      "inference_mode": "greedy",
+      "log_every": 100,
+      "lr": 0.0003,
+      "max_examples": 2,
+      "max_grid_size": 30,
+      "num_candidates": 8,
+      "num_workers": 0,
+      "resume": "checkpoints/arc_encoder/latest.pt",
+      "sample_steps": 64,
+      "save_every": 1000,
+      "seed": 7,
+      "seq_len": 1024,
+      "shape_loss_weight": 0.1,
+      "shape_score_weight": 0.25,
+      "shape_top_k": 5,
+      "steps": 20000,
+      "stochastic_depth_prob": 0.0,
+      "temperature_end": 0.1,
+      "temperature_start": 1.0,
+      "train_dir": null,
+      "use_object_features": false,
+      "use_shape_head": false
+    },
+    "checkpoint": "checkpoints/arc_encoder/latest.pt",
+    "dump_candidates": false,
+    "ensemble_strategy": "confidence",
+    "infer_shape": false,
+    "inference_mode": "greedy",
+    "num_candidates": 8,
+    "sample_steps": 64,
+    "shape_score_weight": 0.25,
+    "shape_top_k": 5,
+    "temperature_end": 0.1,
+    "temperature_start": 1.0
+  },
+  "summary": {
+    "cell_acc": 0.4524073049252905,
+    "color_hist_l1": 0.6569152393500219,
+    "exact": 0.0,
+    "height_acc": 1.0,
+    "mean_confidence": 0.8680548280329089,
+    "mean_token_log_prob": -0.1604810875377143,
+    "nonzero_iou": 0.37102972239646187,
+    "oracle_shape_exact": 0.0,
+    "shape_exact": 1.0,
+    "shape_topk_hit": 1.0,
+    "valid": 1.0,
+    "width_acc": 1.0
+  }
+}
