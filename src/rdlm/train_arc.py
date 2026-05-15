@@ -121,6 +121,9 @@ def create_structured_model(args: argparse.Namespace) -> ArcOutputDiffusion:
         dim=args.dim,
         max_grid_size=args.max_grid_size,
         max_examples=args.max_examples,
+        num_heads=args.num_heads,
+        num_latent_refinements=args.num_latent_refinements,
+        num_refinement_blocks=args.num_refinement_blocks,
         gradient_checkpointing=args.gradient_checkpointing,
         stochastic_depth_prob=args.stochastic_depth_prob,
         aux_loss_weight=args.aux_loss_weight,
@@ -220,6 +223,9 @@ def _config_hash(args: argparse.Namespace) -> str:
         "seq_len",
         "max_grid_size",
         "max_examples",
+        "num_heads",
+        "num_latent_refinements",
+        "num_refinement_blocks",
         "gradient_checkpointing",
         "stochastic_depth_prob",
         "aux_loss_weight",
@@ -967,6 +973,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-grid-size", type=int, default=30)
     parser.add_argument("--max-examples", type=int, default=8)
     parser.add_argument("--dim", type=int, default=256)
+    parser.add_argument("--num-heads", type=int, default=4, help="Number of attention heads in the TinyBlock.")
+    parser.add_argument(
+        "--num-latent-refinements",
+        type=int,
+        default=6,
+        help="Number of inner latent refinement steps per block (n in the TRM paper).",
+    )
+    parser.add_argument(
+        "--num-refinement-blocks",
+        type=int,
+        default=2,
+        help="Number of outer deep-supervision refinement blocks (T in the TRM paper). "
+        "Only the last block receives gradients.",
+    )
     parser.add_argument(
         "--gradient-checkpointing",
         action="store_true",
