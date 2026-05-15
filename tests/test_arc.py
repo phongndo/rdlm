@@ -24,6 +24,7 @@ from rdlm.arc import (
 from rdlm.arc_model import ArcOutputDiffusion, ShapeCandidate, StructuredCandidate
 from rdlm.diffusion_lm import RecursiveDiffusionLM
 from rdlm.train_arc import (
+    arc_heuristic_candidate_score,
     create_model,
     evaluate_structured,
     load_model_checkpoint,
@@ -358,6 +359,120 @@ class ArcTrainingSmokeTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(score_structured_candidate(candidate, 0.25), -1.45)
+
+    def test_arc_heuristics_and_temporal_consistency_rerank_candidates(self):
+        task = {
+            "train": [{"input": [[1, 0]], "output": [[2, 0]]}],
+            "test": [{"input": [[1, 0]], "output": [[2, 0]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[-1]])
+        stable = StructuredCandidate(
+            height=1,
+            width=2,
+            sample=torch.tensor([2, 0]),
+            token_log_probs=torch.tensor([-0.5, -0.5]),
+            mean_token_log_prob=-0.5,
+            shape_log_prob=0.0,
+            source="demo_output",
+            mean_confidence=0.6,
+            mean_entropy=0.1,
+            temporal_consistency=1.0,
+        )
+        unstable = StructuredCandidate(
+            height=1,
+            width=2,
+            sample=torch.tensor([9, 9]),
+            token_log_probs=torch.tensor([-0.5, -0.5]),
+            mean_token_log_prob=-0.5,
+            shape_log_prob=0.0,
+            source="shape_head",
+            mean_confidence=0.6,
+            mean_entropy=1.5,
+            temporal_consistency=0.0,
+        )
+
+        stable_score = score_structured_candidate(
+            stable,
+            0.25,
+            arc_heuristic_candidate_score(stable, batch),
+            temporal_consistency_weight=0.1,
+        )
+        unstable_score = score_structured_candidate(
+            unstable,
+            0.25,
+            arc_heuristic_candidate_score(unstable, batch),
+            temporal_consistency_weight=0.1,
+        )
+
+        self.assertGreater(stable_score, unstable_score)
+
+    def test_adaptive_sample_steps_reduce_trace_length_for_small_grids(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[0]])
+        model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+
+        trace = model.sample_with_trace(
+            context_colors=batch["context_colors"],
+            context_rows=batch["context_rows"],
+            context_cols=batch["context_cols"],
+            context_roles=batch["context_roles"],
+            context_examples=batch["context_examples"],
+            context_mask=batch["context_mask"],
+            target_rows=batch["target_rows"],
+            target_cols=batch["target_cols"],
+            target_mask=batch["target_mask"],
+            steps=64,
+            adaptive_sample_steps=True,
+            min_sample_steps=4,
+            reference_grid_area=256,
+        )
+
+        self.assertLessEqual(trace["sample_history"].shape[1], 4)
+
+    def test_sample_candidates_records_temporal_diagnostics(self):
+        task = {
+            "train": [{"input": [[1]], "output": [[2]]}],
+            "test": [{"input": [[3]], "output": [[4]]}],
+        }
+        examples = build_structured_examples_from_task("tiny", task)
+        batch = collate_structured_arc_examples([examples[0]])
+        model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+
+        candidates = model.sample_candidates(
+            **{
+                key: value
+                for key, value in batch.items()
+                if isinstance(value, torch.Tensor)
+                and key
+                in {
+                    "context_colors",
+                    "context_rows",
+                    "context_cols",
+                    "context_roles",
+                    "context_examples",
+                    "context_mask",
+                    "context_object_ids",
+                    "context_object_size_buckets",
+                    "context_object_heights",
+                    "context_object_widths",
+                    "context_object_rel_rows",
+                    "context_object_rel_cols",
+                }
+            },
+            candidate_shapes=[ShapeCandidate(1, 1, 0.0, "query_input")],
+            steps=4,
+            temporal_vote=True,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertGreaterEqual(candidates[0].temporal_consistency, 0.0)
+        self.assertLessEqual(candidates[0].temporal_consistency, 1.0)
+        self.assertGreater(candidates[0].steps_used, 0)
 
     def test_inferred_shape_eval_does_not_use_target_shape_for_candidates(self):
         task = {
