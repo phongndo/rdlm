@@ -15,7 +15,6 @@ uv.lock
 *.pt
 *.bin
 *.safetensors
-checkpoints/
 
 # Per-example debug dumps (full diffusion trajectories, large)
 artifacts/reports/arc_debug/
