@@ -24,12 +24,14 @@ from rdlm.arc import (
 from rdlm.arc_model import ArcOutputDiffusion, ShapeCandidate, StructuredCandidate
 from rdlm.diffusion_lm import RecursiveDiffusionLM
 from rdlm.train_arc import (
+    _metric_for_best_checkpoint,
     arc_heuristic_candidate_score,
     create_model,
     evaluate_structured,
     load_model_checkpoint,
     propose_mixed_shape_candidates,
     save_checkpoint,
+    save_latest_checkpoint_with_backup,
     score_structured_candidate,
     structured_forward_kwargs,
     structured_prediction_metrics,
@@ -282,6 +284,41 @@ class ArcTrainingSmokeTests(unittest.TestCase):
 
         for key, value in model.state_dict().items():
             self.assertTrue(torch.equal(value, reloaded.state_dict()[key]))
+
+    def test_latest_checkpoint_backups_are_pruned_to_retention(self):
+        model = ArcOutputDiffusion(dim=32, max_grid_size=30, max_examples=8, num_heads=4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=4)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_dir = Path(tmp) / "checkpoints"
+            args = argparse.Namespace(
+                checkpoint_dir=checkpoint_dir,
+                keep_latest_backups=2,
+            )
+            for step in (1, 2, 3):
+                save_latest_checkpoint_with_backup(
+                    checkpoint_dir,
+                    model,
+                    optimizer,
+                    scheduler,
+                    step,
+                    args,
+                )
+
+            latest_path = checkpoint_dir / "latest.pt"
+            backups = sorted((checkpoint_dir / "backups").glob("step_*.pt"))
+            self.assertTrue(latest_path.exists())
+            self.assertEqual(len(backups), 2)
+            self.assertTrue(any("step_0000002_" in path.name for path in backups))
+            self.assertTrue(any("step_0000003_" in path.name for path in backups))
+
+    def test_best_checkpoint_metric_helper_validates_metric_name(self):
+        metrics = {"exact": 0.25, "cell_acc": 0.75}
+
+        self.assertEqual(_metric_for_best_checkpoint(metrics, "exact"), 0.25)
+        with self.assertRaises(KeyError):
+            _metric_for_best_checkpoint(metrics, "shape_exact")
 
     def test_structured_prediction_metrics_capture_partial_errors(self):
         generated = torch.tensor([[1, 2, 0, 0]])

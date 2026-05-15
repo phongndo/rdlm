@@ -153,6 +153,44 @@ def save_checkpoint(
     )
 
 
+def _checkpoint_backup_path(checkpoint_dir: Path, step: int) -> Path:
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return checkpoint_dir / "backups" / f"step_{step:07d}_{timestamp}.pt"
+
+
+def _prune_checkpoint_backups(backup_dir: Path, keep: int) -> list[Path]:
+    if keep < 0:
+        raise ValueError("keep must be non-negative")
+    backups = sorted(
+        backup_dir.glob("step_*.pt"),
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
+    removed: list[Path] = []
+    for path in backups[keep:]:
+        path.unlink(missing_ok=True)
+        removed.append(path)
+    return removed
+
+
+def save_latest_checkpoint_with_backup(
+    checkpoint_dir: Path,
+    model: ArchitectureModel,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    step: int,
+    args: argparse.Namespace,
+) -> tuple[Path, Path | None]:
+    latest_path = checkpoint_dir / "latest.pt"
+    save_checkpoint(latest_path, model, optimizer, scheduler, step, args)
+    backup_path: Path | None = None
+    if args.keep_latest_backups > 0:
+        backup_path = _checkpoint_backup_path(checkpoint_dir, step)
+        save_checkpoint(backup_path, model, optimizer, scheduler, step, args)
+        _prune_checkpoint_backups(checkpoint_dir / "backups", args.keep_latest_backups)
+    return latest_path, backup_path
+
+
 def load_checkpoint(
     path: Path,
     model: ArchitectureModel,
@@ -297,6 +335,16 @@ def save_training_summary(
     latest_path = summary_dir / "latest.json"
     _write_json(step_path, summary)
     _write_json(latest_path, summary)
+
+
+def _metric_for_best_checkpoint(metrics: dict[str, float], metric_name: str) -> float:
+    if metric_name not in metrics:
+        available = ", ".join(sorted(metrics))
+        raise KeyError(
+            f"best checkpoint metric '{metric_name}' not found in eval metrics; "
+            f"available metrics: {available}"
+        )
+    return float(metrics[metric_name])
 
 
 def _grid_from_values(
@@ -1312,6 +1360,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/arc"))
+    parser.add_argument(
+        "--keep-latest-backups",
+        type=int,
+        default=5,
+        help="Keep this many timestamped backups of latest.pt under checkpoint-dir/backups. "
+        "Set to 0 to disable rolling latest backups.",
+    )
+    parser.add_argument(
+        "--best-checkpoint-metric",
+        type=str,
+        default="exact",
+        help="Eval metric used to update checkpoint-dir/best.pt during training.",
+    )
     parser.add_argument("--training-summary-dir", type=Path, default=Path("artifacts/training"))
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--device", default="auto")
@@ -1459,6 +1520,7 @@ def run_training_loop(
     model.train()
     last_out: dict[str, Any] | None = None
     last_eval_metrics: dict[str, float] | None = None
+    best_eval_metric: float | None = None
     for step in range(start_step, args.steps):
         try:
             batch = next(train_iter)
@@ -1539,6 +1601,25 @@ def run_training_loop(
             else:
                 print(f"eval exact={metrics['exact']:.3%} valid={metrics['valid']:.3%}")
             last_eval_metrics = metrics
+            current_best_metric = _metric_for_best_checkpoint(
+                metrics,
+                args.best_checkpoint_metric,
+            )
+            if best_eval_metric is None or current_best_metric > best_eval_metric:
+                best_eval_metric = current_best_metric
+                best_path = args.checkpoint_dir / "best.pt"
+                save_checkpoint(
+                    best_path,
+                    model,
+                    optimizer,
+                    scheduler,
+                    step,
+                    args,
+                )
+                print(
+                    f"[ckpt] updated best {args.best_checkpoint_metric}="
+                    f"{current_best_metric:.6f} -> {best_path}"
+                )
 
         if step > 0 and step % args.save_every == 0:
             save_checkpoint(
@@ -1549,32 +1630,50 @@ def run_training_loop(
                 step,
                 args,
             )
-            save_checkpoint(
-                args.checkpoint_dir / "latest.pt",
+            latest_path, backup_path = save_latest_checkpoint_with_backup(
+                args.checkpoint_dir,
                 model,
                 optimizer,
                 scheduler,
                 step,
                 args,
             )
+            if backup_path is not None:
+                print(f"[ckpt] latest -> {latest_path} | backup -> {backup_path}")
+            else:
+                print(f"[ckpt] latest -> {latest_path}")
 
     if last_out is not None:
+        final_step = args.steps - 1
+        final_path = args.checkpoint_dir / f"final_step_{final_step}.pt"
         save_checkpoint(
-            args.checkpoint_dir / "latest.pt",
+            final_path,
             model,
             optimizer,
             scheduler,
-            args.steps - 1,
+            final_step,
+            args,
+        )
+        latest_path, backup_path = save_latest_checkpoint_with_backup(
+            args.checkpoint_dir,
+            model,
+            optimizer,
+            scheduler,
+            final_step,
             args,
         )
         total_elapsed = time.time() - start_time
         final_loss = last_out["loss"].item()
         print(f"Training complete. Final loss: {final_loss:.4f}")
+        if backup_path is not None:
+            print(f"[ckpt] final -> {final_path} | latest -> {latest_path} | backup -> {backup_path}")
+        else:
+            print(f"[ckpt] final -> {final_path} | latest -> {latest_path}")
         save_training_summary(
             args.training_summary_dir,
             args,
             model,
-            step=args.steps - 1,
+            step=final_step,
             final_loss=final_loss,
             eval_metrics=last_eval_metrics,
             elapsed=total_elapsed,
@@ -1592,6 +1691,8 @@ def main() -> None:
         raise SystemExit("--shape-top-k must be at least 1")
     if args.shape_score_weight < 0.0:
         raise SystemExit("--shape-score-weight must be non-negative")
+    if args.keep_latest_backups < 0:
+        raise SystemExit("--keep-latest-backups must be non-negative")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
