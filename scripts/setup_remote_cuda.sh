@@ -13,6 +13,13 @@ set -Eeuo pipefail
 # Usage:
 #   bash scripts/setup_remote_cuda.sh
 #
+# Fast fresh-VM path:
+#   git clone <repo-url> rdlm && cd rdlm
+#   SKIP_TESTS=1 NO_SHELL=1 bash scripts/setup_remote_cuda.sh
+#   uv run python src/rdlm/train_arc.py --arch structured_encoder --device cuda \
+#     --data-dir data/arc-agi/training --eval-dir data/arc-agi/evaluation \
+#     --checkpoint-dir checkpoints/arc
+#
 # Optional environment variables:
 #   CUDA=cu126                         # PyTorch CUDA wheel tag: cu121, cu124, cu126, cu128, ...
 #   PYTORCH_INDEX_URL=https://...      # Full PyTorch wheel index override
@@ -105,7 +112,16 @@ if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
 fi
 
 log "Setup complete"
-echo "Example: uv run python src/rdlm/train_arc.py --arch structured_encoder --device cuda --data-dir /path/to/arc/tasks"
+echo "Fast local-data training example:"
+echo "  uv run python src/rdlm/train_arc.py \\"
+echo "    --arch structured_encoder --device cuda \\"
+echo "    --data-dir data/arc-agi/training \\"
+echo "    --eval-dir data/arc-agi/evaluation \\"
+echo "    --dim 256 --batch-size 8 --num-workers 4 --steps 20000 \\"
+echo "    --checkpoint-dir checkpoints/arc"
+echo
+echo "Before stopping a rented GPU, create a backup with:"
+echo "  bash scripts/export_run_backup.sh --checkpoint-dir checkpoints/arc"
 
 if [[ "${NO_SHELL:-0}" != "1" ]]; then
   log "Starting activated virtualenv shell"

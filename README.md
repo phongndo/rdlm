@@ -21,6 +21,50 @@ Run a tiny smoke check with a local fixture:
 uv run python -m unittest discover -s tests
 ```
 
+## Fresh GPU machine
+
+For a new rented NVIDIA GPU instance, clone the repo and run the CUDA setup
+script. `SKIP_TESTS=1` makes setup faster when you want to start training
+immediately; omit it when you want the smoke tests to run during setup.
+
+```bash
+git clone <repo-url> rdlm
+cd rdlm
+SKIP_TESTS=1 NO_SHELL=1 bash scripts/setup_remote_cuda.sh
+```
+
+Start a structured encoder run with the repo-local ARC data:
+
+```bash
+uv run python src/rdlm/train_arc.py \
+  --arch structured_encoder \
+  --device cuda \
+  --data-dir data/arc-agi/training \
+  --eval-dir data/arc-agi/evaluation \
+  --dim 256 \
+  --batch-size 8 \
+  --num-workers 4 \
+  --steps 20000 \
+  --checkpoint-dir checkpoints/arc
+```
+
+Before stopping a rented GPU, create a local-pull backup archive on the remote:
+
+```bash
+bash scripts/export_run_backup.sh --checkpoint-dir checkpoints/arc
+```
+
+Then pull it from your Mac or local machine:
+
+```bash
+bash scripts/pull_remote_backup.sh user@host:/path/to/rdlm/backups/rdlm_backup_*.tar.gz ./rdlm-backups/
+```
+
+The backup includes checkpoints, reports, training summaries, logs when present,
+source/config files, and a manifest. It intentionally skips `.venv/`, caches,
+and datasets by default. Use `--include-data` with `export_run_backup.sh` if a
+remote run depends on data that is not already available in the repo.
+
 Run the structured encoder architecture on an NVIDIA CUDA host:
 
 ```bash
