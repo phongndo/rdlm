@@ -480,6 +480,25 @@ class ArcTrainingSmokeTests(unittest.TestCase):
 
         self.assertLessEqual(trace["sample_history"].shape[1], 4)
 
+    def test_structured_reveal_order_scores_prioritize_expected_cells(self):
+        target_rows = torch.tensor([[0, 0, 0, 1, 1, 1, 2, 2, 2]])
+        target_cols = torch.tensor([[0, 1, 2, 0, 1, 2, 0, 1, 2]])
+        target_mask = torch.ones_like(target_rows, dtype=torch.bool)
+
+        scanline = ArcOutputDiffusion._structured_order_score(
+            target_mask, target_rows, target_cols, "scanline"
+        )
+        border = ArcOutputDiffusion._structured_order_score(
+            target_mask, target_rows, target_cols, "border-first"
+        )
+        center = ArcOutputDiffusion._structured_order_score(
+            target_mask, target_rows, target_cols, "center-first"
+        )
+
+        self.assertEqual(int(scanline.argmax(dim=-1).item()), 0)
+        self.assertNotEqual(int(border.argmax(dim=-1).item()), 4)
+        self.assertEqual(int(center.argmax(dim=-1).item()), 4)
+
     def test_sample_candidates_records_temporal_diagnostics(self):
         task = {
             "train": [{"input": [[1]], "output": [[2]]}],

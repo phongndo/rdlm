@@ -91,6 +91,11 @@ uv run python src/rdlm/train_arc.py --arch structured_encoder --eval-only \
   --infer-shape --shape-top-k 5 --dump-candidates \
   --eval-report reports/infer_shape.json --debug-dir debug/infer_shape
 
+# Factorial inferred-shape inference grid over confidence/DOS/structured reveal orders,
+# temporal voting, and calibration.
+RESUME=checkpoints/arc/latest.pt EVAL_DIR=/path/to/arc/eval_tasks \
+  scripts/eval_arc_inference_grid.sh
+
 # Object-feature model path
 uv run python src/rdlm/train_arc.py --arch structured_encoder --device cuda \
   --data-dir /path/to/arc/tasks --eval-dir /path/to/arc/eval_tasks \

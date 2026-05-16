@@ -376,6 +376,46 @@ class ArcOutputDiffusion(nn.Module):
 
     @staticmethod
     @torch.no_grad()
+    def _structured_order_score(
+        target_mask: Tensor,
+        target_rows: Tensor,
+        target_cols: Tensor,
+        strategy: str,
+    ) -> Tensor:
+        """Return deterministic reveal priorities for ARC grid positions."""
+        scores = torch.zeros(target_rows.shape, dtype=torch.float, device=target_rows.device)
+        mask_bool = target_mask.bool()
+        for batch_idx in range(target_rows.shape[0]):
+            mask = mask_bool[batch_idx]
+            if not mask.any():
+                continue
+            rows = target_rows[batch_idx].float()
+            cols = target_cols[batch_idx].float()
+            valid_rows = rows[mask]
+            valid_cols = cols[mask]
+            height = valid_rows.max() + 1.0
+            width = valid_cols.max() + 1.0
+            flat_tiebreak = (rows * width + cols) / (height * width).clamp(min=1.0)
+            if strategy == "scanline":
+                priority = -flat_tiebreak
+            elif strategy == "border-first":
+                distance_to_border = torch.minimum(
+                    torch.minimum(rows, cols),
+                    torch.minimum(height - 1.0 - rows, width - 1.0 - cols),
+                )
+                priority = -distance_to_border - 1e-4 * flat_tiebreak
+            elif strategy == "center-first":
+                center_row = (height - 1.0) / 2.0
+                center_col = (width - 1.0) / 2.0
+                distance_to_center = (rows - center_row).abs() + (cols - center_col).abs()
+                priority = -distance_to_center - 1e-4 * flat_tiebreak
+            else:
+                raise ValueError(f"unknown structured order strategy: {strategy}")
+            scores[batch_idx] = priority
+        return scores
+
+    @staticmethod
+    @torch.no_grad()
     def _temporal_vote(
         final_preds: Tensor,
         final_log_probs: Tensor,
@@ -795,18 +835,27 @@ class ArcOutputDiffusion(nn.Module):
                     calibration_factor = 1.0 - calibration_strength * flip_rate
                     confidence = confidence * calibration_factor
 
-            # ── DOS: spatial dependency scoring ────────────────────────
+            # ── Token reveal priority ──────────────────────────────────
             if sampling_strategy == "dos":
-                confidence = self._dependency_score(
+                selection_confidence = self._dependency_score(
                     confidence, preds, target_mask, target_rows, target_cols
                 )
+            elif sampling_strategy in {"scanline", "border-first", "center-first"}:
+                selection_confidence = self._structured_order_score(
+                    target_mask, target_rows, target_cols, sampling_strategy
+                )
+            else:
+                selection_confidence = confidence
 
-            confidence = confidence.masked_fill(~target_mask.bool() | revealed, -float("inf"))
+            selection_confidence = selection_confidence.masked_fill(
+                ~target_mask.bool() | revealed,
+                -float("inf"),
+            )
             transfer = torch.zeros_like(revealed)
             for row in range(batch):
                 k = int(transfer_schedule[row, step_idx].item())
                 if k > 0:
-                    _vals, idxs = torch.topk(confidence[row], k=min(k, target_len))
+                    _vals, idxs = torch.topk(selection_confidence[row], k=min(k, target_len))
                     transfer[row, idxs] = True
             current = torch.where(transfer, preds, current)
             token_log_probs = torch.where(transfer, clean_pred_log_probs, token_log_probs)
@@ -1218,10 +1267,14 @@ class ArcOutputDiffusion(nn.Module):
                     calibration_factor = 1.0 - calibration_strength * flip_rate
                     confidence = confidence * calibration_factor
 
-            # ── DOS: spatial dependency scoring ────────────────────────
+            # ── Token reveal priority ──────────────────────────────────
             if sampling_strategy == "dos":
                 selection_confidence = self._dependency_score(
                     confidence, preds, target_mask, target_rows, target_cols
+                )
+            elif sampling_strategy in {"scanline", "border-first", "center-first"}:
+                selection_confidence = self._structured_order_score(
+                    target_mask, target_rows, target_cols, sampling_strategy
                 )
             else:
                 selection_confidence = confidence

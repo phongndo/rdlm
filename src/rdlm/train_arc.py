@@ -1445,11 +1445,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sampling-strategy",
-        choices=["confidence", "dos"],
+        choices=["confidence", "dos", "scanline", "border-first", "center-first"],
         default="confidence",
         help="Token selection strategy during diffusion decoding. "
         "'confidence' = original softmax confidence, "
-        "'dos' = Dependency-Oriented Sampling with spatial neighbor consistency.",
+        "'dos' = Dependency-Oriented Sampling with spatial neighbor consistency, "
+        "or deterministic ARC reveal orders: 'scanline', 'border-first', 'center-first'.",
     )
     parser.add_argument(
         "--enable-calibration",
